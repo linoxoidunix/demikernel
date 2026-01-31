@@ -39,3 +39,7 @@ Cargo.lock
 .coverage
 coverage.xml
 coverage.info
+
+# example logs folder
+catnip-dev
+

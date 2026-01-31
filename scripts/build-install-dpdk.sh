@@ -21,7 +21,7 @@ mkdir -p build
 pip3 install pyelftools
 
 # Build and install
-meson --prefix=$HOME build
+CC=gcc-14 CXX=g++-14 meson setup build --prefix=$HOME/dpdk-22.11 -Ddisable_drivers=net/gve,net/ionic
 ninja -C build
 ninja -C build install
 
