@@ -267,11 +267,12 @@ impl SharedDPDKRuntime {
                 let link = link.assume_init();
 
                 if link.__bindgen_anon_1.__bindgen_anon_1.link_status() as u32 == RTE_ETH_LINK_UP {
-                    let duplex = if link.__bindgen_anon_1.__bindgen_anon_1.link_duplex() as u32 == RTE_ETH_LINK_FULL_DUPLEX {
-                        "full"
-                    } else {
-                        "half"
-                    };
+                    let duplex =
+                        if link.__bindgen_anon_1.__bindgen_anon_1.link_duplex() as u32 == RTE_ETH_LINK_FULL_DUPLEX {
+                            "full"
+                        } else {
+                            "half"
+                        };
                     eprintln!(
                         "Port {} Link Up - speed {} Mbps - {} duplex",
                         port, link.__bindgen_anon_1.__bindgen_anon_1.link_speed, duplex
