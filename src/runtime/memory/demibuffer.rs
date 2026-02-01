@@ -596,7 +596,7 @@ impl DemiBuffer {
                 let mbuf = self.as_mbuf();
                 unsafe {
                     // Safety: The `mbuf` dereference below is safe, as it is aligned and dereferenceable.
-                    if ((*mbuf).data_len as usize) < nbytes {
+                    if ((*mbuf).__bindgen_anon_2.__bindgen_anon_1.data_len as usize) < nbytes {
                         return Err(Fail::new(libc::EINVAL, "tried to remove more bytes than are present"));
                     }
                 }
@@ -637,7 +637,7 @@ impl DemiBuffer {
                 let mbuf = self.as_mbuf();
                 unsafe {
                     // Safety: The `mbuf` dereference below is safe, as it is aligned and dereferenceable.
-                    if ((*mbuf).data_len as usize) < nbytes {
+                    if ((*mbuf).__bindgen_anon_2.__bindgen_anon_1.data_len as usize) < nbytes {
                         return Err(Fail::new(libc::EINVAL, "tried to remove more bytes than are present"));
                     }
                 }
@@ -881,7 +881,7 @@ impl DemiBuffer {
             Tag::Dpdk => {
                 let mbuf = self.as_mbuf();
                 // Safety: The `mbuf` dereferences in this block are safe, as it is aligned and dereferenceable.
-                unsafe { (*mbuf).nb_segs != 1 }
+                unsafe { (*mbuf).__bindgen_anon_1.__bindgen_anon_1.nb_segs != 1 }
             },
         }
     }
