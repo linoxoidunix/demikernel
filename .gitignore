@@ -45,3 +45,6 @@ catnip-dev
 
 # dpdk install folder
 install
+
+# dpdk downloaded folder
+build_tmp

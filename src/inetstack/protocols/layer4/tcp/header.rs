@@ -2,14 +2,13 @@
 // Licensed under the MIT license.
 
 use crate::{
-    inetstack::protocols::{layer3::ip::IpProtocol, layer4::tcp::SeqNumber},
+    inetstack::protocols::layer4::tcp::SeqNumber,
     runtime::{fail::Fail, memory::DemiBuffer},
 };
 use ::libc::EBADMSG;
 use ::std::{
     io::{Cursor, Read},
     net::Ipv4Addr,
-    slice::ChunksExact,
 };
 
 pub const MIN_TCP_HEADER_SIZE: usize = 20;
@@ -394,13 +393,15 @@ impl TcpHeader {
             *byte = 0;
         }
 
+        //обнуляем поля чек суммы
+        hdr_buf[16] = 0;
+        hdr_buf[17] = 0;
+
         // Alright, we've fully filled out the header, time to compute the checksum.
+        // если есть аппаратный расчёт то позволяем считать
         if !tx_checksum_offload {
             let checksum: u16 = tcp_checksum(src_ipv4_addr, dst_ipv4_addr, &hdr_buf[..], payload);
             hdr_buf[16..18].copy_from_slice(&checksum.to_be_bytes());
-        } else {
-            hdr_buf[16] = 0;
-            hdr_buf[17] = 0;
         }
     }
 
@@ -431,79 +432,46 @@ impl TcpHeader {
 }
 
 fn tcp_checksum(src_ipv4_addr: &Ipv4Addr, dst_ipv4_addr: &Ipv4Addr, header: &[u8], data: &[u8]) -> u16 {
-    let mut state: u32 = 0xffff;
+    let mut sum: u32 = 0;
 
-    // First, fold in a "pseudo-IP" header of...
-    // 1) Source address (4 bytes)
-    let src_octets: [u8; 4] = src_ipv4_addr.octets();
-    state += u16::from_be_bytes([src_octets[0], src_octets[1]]) as u32;
-    state += u16::from_be_bytes([src_octets[2], src_octets[3]]) as u32;
+    // --- Псевдо-заголовок IPv4 ---
+    let src_octets = src_ipv4_addr.octets();
+    let dst_octets = dst_ipv4_addr.octets();
 
-    // 2) Destination address (4 bytes)
-    let dst_octets: [u8; 4] = dst_ipv4_addr.octets();
-    state += u16::from_be_bytes([dst_octets[0], dst_octets[1]]) as u32;
-    state += u16::from_be_bytes([dst_octets[2], dst_octets[3]]) as u32;
+    // IP адреса как 16-битные слова
+    sum += u16::from_be_bytes([src_octets[0], src_octets[1]]) as u32;
+    sum += u16::from_be_bytes([src_octets[2], src_octets[3]]) as u32;
+    sum += u16::from_be_bytes([dst_octets[0], dst_octets[1]]) as u32;
+    sum += u16::from_be_bytes([dst_octets[2], dst_octets[3]]) as u32;
 
-    // 3) 1 byte of zeros and TCP protocol number (1 byte)
-    state += u16::from_be_bytes([0, IpProtocol::TCP as u8]) as u32;
+    // Протокол (TCP = 6) и общая длина TCP сегмента
+    sum += 6u32;
+    sum += (header.len() + data.len()) as u32;
 
-    // 4) TCP segment length (2 bytes)
-    state += (header.len() + data.len()) as u32;
-
-    let fixed_header: &[u8; MIN_TCP_HEADER_SIZE] = header[..MIN_TCP_HEADER_SIZE].try_into().unwrap();
-
-    // Continue to the TCP header. First, for the fixed length parts, we have...
-    // 1) Source port (2 bytes)
-    state += u16::from_be_bytes([fixed_header[0], fixed_header[1]]) as u32;
-
-    // 2) Destination port (2 bytes)
-    state += u16::from_be_bytes([fixed_header[2], fixed_header[3]]) as u32;
-
-    // 3) Sequence number (4 bytes)
-    state += u16::from_be_bytes([fixed_header[4], fixed_header[5]]) as u32;
-    state += u16::from_be_bytes([fixed_header[6], fixed_header[7]]) as u32;
-
-    // 4) Acknowledgement number (4 bytes)
-    state += u16::from_be_bytes([fixed_header[8], fixed_header[9]]) as u32;
-    state += u16::from_be_bytes([fixed_header[10], fixed_header[11]]) as u32;
-
-    // 5) Data offset (4 bits), reserved (4 bits), and flags (1 byte)
-    state += u16::from_be_bytes([fixed_header[12], fixed_header[13]]) as u32;
-
-    // 6) Window (2 bytes)
-    state += u16::from_be_bytes([fixed_header[14], fixed_header[15]]) as u32;
-
-    // 7) Checksum (all zeros, 2 bytes)
-    state += 0;
-
-    // 8) Urgent pointer (2 bytes)
-    state += u16::from_be_bytes([fixed_header[18], fixed_header[19]]) as u32;
-
-    // Next, the variable length part of the header for TCP options. Since `data_offset` is
-    // guaranteed to be aligned to a 32-bit boundary, we don't have to handle remainders.
-    if header.len() > MIN_TCP_HEADER_SIZE {
-        assert_eq!(header.len() % 2, 0);
-        for chunk in header[MIN_TCP_HEADER_SIZE..].chunks_exact(2) {
-            state += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
-        }
+    // --- TCP Заголовок ---
+    // Обрабатываем заголовок как массив 16-битных слов
+    for chunk in header.chunks_exact(2) {
+        // Пропускаем поле чексуммы (байты 16-17), если они не занулены
+        // В твоем случае они занулены в serialize_and_attach, так что можно считать всё
+        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
     }
 
-    // Finally, checksum the data itself.
-    let mut chunks_iter: ChunksExact<u8> = data.chunks_exact(2);
-    for chunk in chunks_iter.by_ref() {
-        state += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+    // --- Данные (Payload) ---
+    let mut chunks = data.chunks_exact(2);
+    for chunk in chunks.by_ref() {
+        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
     }
-    // Since the data may have an odd number of bytes, pad the last byte with zero if necessary.
-    if let Some(&b) = chunks_iter.remainder().first() {
-        state += u16::from_be_bytes([b, 0]) as u32;
+    // Если данных нечетное количество байт
+    if let Some(&b) = chunks.remainder().first() {
+        sum += u16::from_be_bytes([b, 0]) as u32;
     }
 
-    // NB: We don't need to subtract out 0xFFFF as we accumulate the sum. Since we use a u32 for
-    // intermediate state, we would need 2^16 additions to overflow. This is well beyond the reach
-    // of the largest jumbo frames. The upshot is that the compiler can then optimize this final
-    // loop into a single branchfree code.
-    while state > 0xFFFF {
-        state -= 0xFFFF;
+    // --- Финальное схлопывание (Fold) ---
+    // Переносим биты из верхних 16 бит в нижние, пока они не кончатся
+    while (sum >> 16) > 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
     }
-    !state as u16
+
+    // Инвертируем результат
+    !(sum as u16)
 }

@@ -47,6 +47,10 @@ pub struct TcpPeer {
     default_socket_options: TcpSocketOptions,
     rng: SmallRng,
     addresses: HashMap<SocketId, SharedTcpSocket>,
+    #[allow(dead_code)]
+    gateway_ipv4_addr: Option<Ipv4Addr>,
+    #[allow(dead_code)]
+    local_netmask: Option<Ipv4Addr>,
 }
 
 #[derive(Clone)]
@@ -74,6 +78,8 @@ impl SharedTcpPeer {
             default_socket_options: TcpSocketOptions::new(config)?,
             rng,
             addresses: HashMap::<SocketId, SharedTcpSocket>::new(),
+            gateway_ipv4_addr: config.gateway_ipv4_addr(),
+            local_netmask: config.local_netmask(),
         })))
     }
 

@@ -6,7 +6,7 @@
 //======================================================================================================================
 
 use crate::inetstack::{
-    config::{ArpConfig, TcpConfig, UdpConfig},
+    config::{ArpConfig, Ipv4Config, TcpConfig, UdpConfig},
     types::MacAddress,
 };
 use ::rand::{thread_rng, Rng};
@@ -24,6 +24,7 @@ pub struct Options {
     pub rng_seed: [u8; 32],
     pub tcp: TcpConfig,
     pub udp: UdpConfig,
+    pub ipv4: Ipv4Config,
 }
 
 //======================================================================================================================
@@ -41,6 +42,7 @@ impl Default for Options {
             rng_seed,
             tcp: TcpConfig::default(),
             udp: Default::default(),
+            ipv4: Ipv4Config::default(),
         }
     }
 }

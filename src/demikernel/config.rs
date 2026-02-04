@@ -45,6 +45,8 @@ mod inetstack_config {
     pub const ENABLE_JUMBO_FRAMES: &str = "enable_jumbo_frames";
     pub const UDP_CHECKSUM_OFFLOAD: &str = "udp_checksum_offload";
     pub const TCP_CHECKSUM_OFFLOAD: &str = "tcp_checksum_offload";
+    pub const GATEWAY_IPV4_ADDR: &str = "gateway_ipv4_addr";
+    pub const LOCAL_NETMASK: &str = "local_netmask";
 }
 
 // DPDK options. These only apply to catnip.
@@ -269,6 +271,24 @@ impl Config {
         }
 
         Ok(Some(table))
+    }
+
+    pub fn gateway_ipv4_addr(&self) -> Option<Ipv4Addr> {
+        let cfg: &Yaml = self.inetstack_config().ok()?;
+
+        // Пытаемся достать строку. Если ключа нет или это не строка — возвращаем None
+        let gateway_str: &str = cfg[inetstack_config::GATEWAY_IPV4_ADDR].as_str()?;
+
+        // Пытаемся распарсить. Если ошибка в формате IP — игнорируем и возвращаем None
+        gateway_str.parse::<Ipv4Addr>().ok()
+    }
+
+    pub fn local_netmask(&self) -> Option<Ipv4Addr> {
+        let cfg: &Yaml = self.inetstack_config().ok()?;
+
+        let netmask_str: &str = cfg[inetstack_config::LOCAL_NETMASK].as_str()?;
+
+        netmask_str.parse::<Ipv4Addr>().ok()
     }
 
     pub fn arp_cache_ttl(&self) -> Result<Duration, Fail> {

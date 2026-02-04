@@ -54,6 +54,8 @@ pub struct DPDKRuntime {
     max_body_size: usize,
     mem_pool: MemoryPool,
     port_id: u16,
+    tcp_checksum_offload: bool,
+    udp_checksum_offload: bool,
 }
 
 #[derive(Clone)]
@@ -88,6 +90,8 @@ impl SharedDPDKRuntime {
             max_body_size,
             mem_pool,
             port_id,
+            tcp_checksum_offload: tcp_offload,
+            udp_checksum_offload: udp_offload,
         })))
     }
 
@@ -324,7 +328,7 @@ impl PhysicalLayer for SharedDPDKRuntime {
         let mut mbufs: [*mut rte_mbuf; MAX_BATCH_SIZE_NUM_PACKETS] = unsafe { mem::zeroed() };
 
         for (i, packet) in packets.into_iter().enumerate() {
-            mbufs[i] = if packet.is_dpdk_allocated() {
+            let mbuf_ptr = if packet.is_dpdk_allocated() {
                 packet
                     .into_mbuf()
                     .ok_or(Fail::new(libc::EINVAL, "failed to extract DPDK mbuf"))?
@@ -336,9 +340,64 @@ impl PhysicalLayer for SharedDPDKRuntime {
                     .ok_or(Fail::new(libc::EINVAL, "failed to convert copied buffer to mbuf"))?
             } else {
                 return Err(Fail::new(libc::EINVAL, "packet too large for DPDK buffer"));
+            };
+
+            // --- НАСТРОЙКА OFFLOAD ДЛЯ КАРТЫ ---
+            unsafe {
+                let m = &mut *mbuf_ptr;
+                let mut ol_flags: u64 = 0;
+
+                // Базовые длины для IPv4
+                let l2_len: u64 = 14; // Ethernet
+                let l3_len: u64 = 20; // IPv4 (без опций)
+
+                // Проверяем, нужно ли считать чексуму (флаги берем из self)
+                if self.tcp_checksum_offload {
+                    ol_flags |= (1 << 2) | (1 << 3) | (1 << 52); // IPV4 | IP_CSUM | TCP_CSUM
+                } else if self.udp_checksum_offload {
+                    ol_flags |= (1 << 2) | (1 << 3) | (1 << 53); // IPV4 | IP_CSUM | UDP_CSUM
+                }
+
+                if ol_flags != 0 {
+                    m.ol_flags |= ol_flags;
+                    // Записываем смещения в tx_offload
+                    // Бит 0-6: L2_len, Бит 7-14: L3_len
+                    m.__bindgen_anon_3.tx_offload = l2_len | (l3_len << 7);
+                }
+            }
+
+            mbufs[i] = mbuf_ptr;
+        }
+        // === ВСТАВЛЯЙ СЮДА ===
+        if count > 0 {
+            unsafe {
+                let m = &*mbufs[0];
+
+                // Пробираемся через дебри bindgen
+                let ol_flags = m.ol_flags;
+
+                // pkt_len и data_len лежат внутри первой анонимной структуры
+                let pkt_len = m.__bindgen_anon_2.__bindgen_anon_1.pkt_len;
+                let data_len = m.__bindgen_anon_2.__bindgen_anon_1.data_len;
+
+                // tx_offload обычно находится в третьем анонимном блоке (в начале второй кэш-линии)
+                // Если компилятор ругается на tx_offload, попробуем вытащить его через анонимное поле
+                let tx_offload = m.__bindgen_anon_3.tx_offload;
+
+                println!("--- [DPDK TX Packet 0 Debug] ---");
+                println!("Data Len: {}, Pkt Len: {}", data_len, pkt_len);
+                println!("ol_flags: {:#018x}", ol_flags);
+                println!("tx_offload raw: {:#018x}", tx_offload);
+
+                // Декодируем смещения
+                println!(
+                    "Decoded: L2_len={}, L3_len={}",
+                    tx_offload & 0x7F,
+                    (tx_offload >> 7) & 0x1FF
+                );
+                println!("---------------------------------");
             }
         }
-
         let sent = unsafe { rte_eth_tx_burst(self.port_id, 0, mbufs.as_mut_ptr(), count as u16) };
         debug_assert_eq!(sent, 1);
         Ok(())

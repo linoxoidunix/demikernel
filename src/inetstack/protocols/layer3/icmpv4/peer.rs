@@ -44,6 +44,21 @@ enum InflightRequest {
     Complete,
 }
 
+pub fn is_local_address(addr: Ipv4Addr, local_addr: Ipv4Addr, mask: Option<Ipv4Addr>) -> bool {
+    // Если маска не задана, мы не можем сравнить подсети.
+    // Возвращаем true, чтобы стек пытался слать пакет напрямую (как раньше).
+    let mask_addr = match mask {
+        Some(m) => m,
+        None => return true,
+    };
+
+    let dest_u32 = u32::from_be_bytes(addr.octets());
+    let local_u32 = u32::from_be_bytes(local_addr.octets());
+    let mask_u32 = u32::from_be_bytes(mask_addr.octets());
+
+    (dest_u32 & mask_u32) == (local_u32 & mask_u32)
+}
+
 ///
 /// Internet Control Message Protocol (ICMP)
 ///
@@ -61,6 +76,8 @@ pub struct Icmpv4Peer {
     layer2_endpoint: SharedLayer2Endpoint,
     local_ipv4_addr: Ipv4Addr,
 
+    gateway_ipv4_addr: Option<Ipv4Addr>,
+    local_netmask: Option<Ipv4Addr>,
     /// Underlying ARP Peer
     arp: SharedArpPeer,
 
@@ -93,6 +110,8 @@ impl SharedIcmpv4Peer {
             runtime: runtime.clone(),
             layer2_endpoint: layer2_endpoint.clone(),
             local_ipv4_addr: config.local_ipv4_addr()?,
+            gateway_ipv4_addr: config.gateway_ipv4_addr(),
+            local_netmask: config.local_netmask(),
             arp: arp.clone(),
             recv_queue: AsyncQueue::<(Ipv4Header, DemiBuffer)>::default(),
             seq: Wrapping(0),
@@ -237,16 +256,43 @@ impl SharedIcmpv4Peer {
     ) -> Result<(), Fail> {
         debug!("initiating ARP query");
 
-        let dst_mac = self.arp.query(dst_ip).await?;
-        debug!("ARP query complete ({} -> {})", dst_ip, dst_mac);
+        // Определяем, нужно ли нам идти через шлюз
+        let is_local = is_local_address(
+            dst_ip,
+            self.local_ipv4_addr,
+            self.local_netmask, // Здесь возвращается Option
+        );
+
+        let next_hop = if is_local {
+            dst_ip
+        } else {
+            // Если адрес не локальный, берем шлюз.
+            // Если шлюза тоже нет (is_unspecified), откатываемся на dst_ip.
+            match self.gateway_ipv4_addr {
+                Some(gw) if !gw.is_unspecified() => gw,
+                _ => {
+                    warn!("External IP {:?} but no gateway configured, trying direct", dst_ip);
+                    dst_ip
+                },
+            }
+        };
+
+        // 2. ARP ЗАПРОС: Мы ищем MAC-адрес соседа (либо цели, либо роутера)
+        let dst_mac = self.arp.query(next_hop).await?;
+
+        debug!("ARP query complete ({} -> {})", next_hop, dst_mac);
         debug!("ping ({}, {:?})", dst_ip, request);
 
+        // 3. СБОРКА ICMP
         let icmp_header = Icmpv4Header::new(request, 0);
         icmp_header.serialize_and_attach(&mut buffer);
 
+        // 4. СБОРКА IP: Здесь dst_ip ВСЕГДА оригинальный (цель)
+        // Это важно: роутер должен увидеть в IP-заголовке конечный адрес!
         let ip_header = Ipv4Header::new(self.local_ipv4_addr, dst_ip, IpProtocol::ICMPv4);
         ip_header.serialize_and_attach(&mut buffer);
 
+        // 5. ОТПРАВКА: Пакет уходит на MAC шлюза, но с IP цели внутри
         self.layer2_endpoint.transmit_ipv4_packet(dst_mac, buffer)
     }
 }

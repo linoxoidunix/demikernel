@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 mod arp;
+mod ipv4;
 mod tcp;
 mod udp;
 
@@ -9,4 +10,4 @@ mod udp;
 // Exports
 //======================================================================================================================
 
-pub use self::{arp::ArpConfig, tcp::TcpConfig, udp::UdpConfig};
+pub use self::{arp::ArpConfig, ipv4::Ipv4Config, tcp::TcpConfig, udp::UdpConfig};

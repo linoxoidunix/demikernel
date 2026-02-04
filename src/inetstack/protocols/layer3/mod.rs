@@ -31,6 +31,21 @@ use ::std::{
     ops::{Deref, DerefMut},
 };
 
+pub fn is_local_address(addr: Ipv4Addr, local_addr: Ipv4Addr, mask: Option<Ipv4Addr>) -> bool {
+    // Если маска не задана, мы не можем сравнить подсети.
+    // Возвращаем true, чтобы стек пытался слать пакет напрямую (как раньше).
+    let mask_addr = match mask {
+        Some(m) => m,
+        None => return true,
+    };
+
+    let dest_u32 = u32::from_be_bytes(addr.octets());
+    let local_u32 = u32::from_be_bytes(local_addr.octets());
+    let mask_u32 = u32::from_be_bytes(mask_addr.octets());
+
+    (dest_u32 & mask_u32) == (local_u32 & mask_u32)
+}
+
 //======================================================================================================================
 // Structures
 //======================================================================================================================
@@ -40,6 +55,8 @@ pub struct Layer3Endpoint {
     arp: SharedArpPeer,
     icmpv4: SharedIcmpv4Peer,
     local_ip: Ipv4Addr,
+    gateway_ipv4_addr: Option<Ipv4Addr>,
+    local_netmask: Option<Ipv4Addr>,
 }
 
 #[derive(Clone)]
@@ -57,13 +74,40 @@ impl SharedLayer3Endpoint {
         rng_seed: [u8; 32],
     ) -> Result<Self, Fail> {
         let arp = SharedArpPeer::new(config, runtime.clone(), layer2_endpoint.clone())?;
+        let gateway_ipv4_addr = config.gateway_ipv4_addr();
+        let local_netmask = config.local_netmask();
 
         Ok(SharedLayer3Endpoint(SharedObject::new(Layer3Endpoint {
             arp: arp.clone(),
             icmpv4: SharedIcmpv4Peer::new(config, runtime, layer2_endpoint.clone(), arp, rng_seed)?,
             local_ip: config.local_ipv4_addr()?,
             layer2_endpoint,
+            gateway_ipv4_addr,
+            local_netmask,
         })))
+    }
+
+    // Вспомогательная функция для определения, кому слать ARP
+    fn get_next_hop(&self, remote_ip: Ipv4Addr) -> Ipv4Addr {
+        if is_local_address(remote_ip, self.local_ip, self.local_netmask) {
+            debug!("get_next_hop(): {} is local, routing directly", remote_ip);
+            remote_ip
+        } else {
+            match self.gateway_ipv4_addr {
+                Some(gw) if !gw.is_unspecified() => {
+                    debug!("get_next_hop(): {} is remote, routing via gateway {}", remote_ip, gw);
+                    gw
+                },
+                _ => {
+                    // Если адрес внешний, но шлюз не задан — это потенциальная проблема
+                    warn!(
+                        "get_next_hop(): {} is remote but no gateway configured! falling back to direct delivery",
+                        remote_ip
+                    );
+                    remote_ip
+                },
+            }
+        }
     }
 
     pub fn receive(
@@ -117,7 +161,8 @@ impl SharedLayer3Endpoint {
     }
 
     pub fn transmit_tcp_packet_nonblocking(&mut self, remote_ip: Ipv4Addr, pkt: DemiBuffer) -> Result<(), Fail> {
-        let remote_mac = match self.arp.try_query(remote_ip) {
+        let next_hop = self.get_next_hop(remote_ip);
+        let remote_mac = match self.arp.try_query(next_hop) {
             Some(mac) => mac,
             _ => return Err(Fail::new(libc::EAGAIN, "destination not in ARP cache")),
         };
@@ -126,25 +171,28 @@ impl SharedLayer3Endpoint {
     }
 
     pub async fn transmit_tcp_packet_blocking(&mut self, remote_ip: Ipv4Addr, pkt: DemiBuffer) -> Result<(), Fail> {
-        let remote_mac = self.arp.query(remote_ip).await?;
+        let next_hop = self.get_next_hop(remote_ip);
+        let remote_mac = self.arp.query(next_hop).await?;
         self.transmit_packet(remote_ip, remote_mac, IpProtocol::TCP, pkt)
     }
 
     pub async fn transmit_udp_packet_blocking(&mut self, remote_ip: Ipv4Addr, pkt: DemiBuffer) -> Result<(), Fail> {
-        let remote_mac = self.arp.query(remote_ip).await?;
+        let next_hop = self.get_next_hop(remote_ip);
+        let remote_mac = self.arp.query(next_hop).await?;
         self.transmit_packet(remote_ip, remote_mac, IpProtocol::UDP, pkt)
     }
 
     pub fn transmit_packet(
         &mut self,
-        remote_ip: Ipv4Addr,
-        remote_mac: MacAddress,
+        remote_ip: Ipv4Addr,    // Это IP конечного узла (идет в IP заголовок)
+        remote_mac: MacAddress, // Это MAC следующего узла (идет в Ethernet заголовок)
         ip_protocol: IpProtocol,
         mut pkt: DemiBuffer,
     ) -> Result<(), Fail> {
         let header = Ipv4Header::new(self.local_ip, remote_ip, ip_protocol);
         debug!("L3 OUTGOING {:?}", header);
         header.serialize_and_attach(&mut pkt);
+        debug!("L3 OUTGOING ACTUAL: {:?}", header);
         self.layer2_endpoint.transmit_ipv4_packet(remote_mac, pkt)
     }
 

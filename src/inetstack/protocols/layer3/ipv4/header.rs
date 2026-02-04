@@ -230,7 +230,6 @@ impl Ipv4Header {
         buf.prepend(IPV4_HEADER_MIN_SIZE as usize)
             .expect("Should be sufficient headroom");
         let pkt_size_bytes = buf.len();
-
         // Version + IHL.
         buf[0] = (self.version << 4) | self.ihl;
 
@@ -259,10 +258,21 @@ impl Ipv4Header {
 
         // Destination Address.
         buf[16..20].copy_from_slice(&self.dst_addr.octets());
+        // ВАЖНО: Обнуляем поле чексуммы в буфере.
+        // Без этого compute_checksum посчитает сумму вместе с тем, что там лежало раньше.
+        // 1. ПРИНУДИТЕЛЬНО обнуляем поле чексуммы в буфере перед расчетом
+        if buf.len() >= 12 {
+            buf[10] = 0;
+            buf[11] = 0;
+        }
 
-        // Header Checksum.
-        let checksum = Self::compute_checksum(buf);
+        // 2. Считаем чексумму ТОЛЬКО по заголовку (20 байт)
+        let checksum = Self::compute_checksum(&buf[..IPV4_HEADER_MIN_SIZE as usize]);
+
+        // 3. Записываем результат обратно в буфер
         buf[10..12].copy_from_slice(&checksum.to_be_bytes());
+
+        debug!("L3 Checksum fixed: 0x{:04x} for total_len: {}", checksum, buf.len());
     }
 
     pub fn src_addr(&self) -> Ipv4Addr {
@@ -278,25 +288,30 @@ impl Ipv4Header {
     }
 
     pub fn compute_checksum(buf: &[u8]) -> u16 {
-        let mut state = 0xffff;
+        let mut sum: u32 = 0;
 
-        if buf.len() < IPV4_HEADER_MIN_SIZE as usize {
-            // This should not happen by construction.
-            warn!("compute_checksum: buffer is too small (len={})", buf.len());
-            return 0;
+        // Перебираем заголовок по 2 байта
+        for i in (0..buf.len()).step_by(2) {
+            // Если это байты 10 и 11 (поле чексуммы), пропускаем их (считаем как 0)
+            if i == 10 {
+                continue;
+            }
+
+            let word = if i + 1 < buf.len() {
+                u16::from_be_bytes([buf[i], buf[i + 1]])
+            } else {
+                // Если заголовок нечетный (на всякий случай)
+                (buf[i] as u16) << 8
+            };
+            sum += word as u32;
         }
 
-        for i in 0..5 {
-            state += u16::from_be_bytes([buf[2 * i], buf[2 * i + 1]]) as u32;
+        // Складываем переносы
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
         }
-        // Skip the 5th u16 since octets 10-12 are the header checksum, whose value should be zero when
-        // computing a checksum.
-        for i in 6..10 {
-            state += u16::from_be_bytes([buf[2 * i], buf[2 * i + 1]]) as u32;
-        }
-        while state > 0xffff {
-            state -= 0xffff;
-        }
-        !state as u16
+
+        // Инвертируем результат
+        !(sum as u16)
     }
 }
