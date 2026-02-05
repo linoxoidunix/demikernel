@@ -15,6 +15,33 @@ pub const MIN_TCP_HEADER_SIZE: usize = 20;
 pub const MAX_TCP_HEADER_SIZE: usize = 60;
 pub const MAX_TCP_OPTIONS: usize = 5;
 
+fn ipv4_pseudo_header_checksum(src: &Ipv4Addr, dst: &Ipv4Addr, proto: u8, len: u16) -> u16 {
+    let src_octets = src.octets();
+    let dst_octets = dst.octets();
+
+    let mut sum: u32 = 0;
+
+    // Суммируем IP адреса (по 16 бит)
+    for i in (0..4).step_by(2) {
+        sum += u16::from_be_bytes([src_octets[i], src_octets[i + 1]]) as u32;
+        sum += u16::from_be_bytes([dst_octets[i], dst_octets[i + 1]]) as u32;
+    }
+
+    // Добавляем протокол и длину TCP-сегмента
+    sum += proto as u32;
+    sum += len as u32;
+
+    // Складываем переносы (fold 32-bit to 16-bit)
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    // ВАЖНО: Для DPDK offload инверсия (NOT) обычно НЕ делается
+    // или делается автоматически. Однако стандарт требует phdr_cksum
+    // как сумму дополнений. В DPDK rte_ipv4_phdr_cksum возвращает инвертированное значение.
+    !(sum as u16)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SelectiveAcknowlegement {
     pub begin: SeqNumber,
@@ -400,8 +427,20 @@ impl TcpHeader {
         // Alright, we've fully filled out the header, time to compute the checksum.
         // если есть аппаратный расчёт то позволяем считать
         if !tx_checksum_offload {
+            // Программный расчет: считаем всё (псевдо-заголовок + заголовок + данные)
             let checksum: u16 = tcp_checksum(src_ipv4_addr, dst_ipv4_addr, &hdr_buf[..], payload);
             hdr_buf[16..18].copy_from_slice(&checksum.to_be_bytes());
+        } else {
+            // Аппаратный оффлоад: считаем ТОЛЬКО псевдо-заголовок
+            // В DPDK это эквивалент rte_ipv4_phdr_cksum()
+            let tcp_len = (header_bytes + payload.len()) as u16;
+            let phdr_checksum: u16 = ipv4_pseudo_header_checksum(
+                src_ipv4_addr,
+                dst_ipv4_addr,
+                6, // Протокол TCP
+                tcp_len,
+            );
+            hdr_buf[16..18].copy_from_slice(&phdr_checksum.to_be_bytes());
         }
     }
 

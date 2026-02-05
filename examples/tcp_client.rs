@@ -93,6 +93,49 @@ impl TcpClient {
 
         Ok(())
     }
+
+    /// 1. Отдельный метод для установки соединения
+    pub fn connect(&mut self) -> Result<QDesc> {
+        let qd = self.create_and_register_socket()?;
+
+        println!("Установка соединения с {:?}...", self.remote_addr);
+        let qt: QToken = self.libos.connect(qd, self.remote_addr)?;
+        let qr: demi_qresult_t = self.libos.wait(qt, Some(TIMEOUT_SECONDS))?;
+
+        if qr.qr_opcode != demi_opcode_t::DEMI_OPC_CONNECT {
+            self.issue_close_and_deregister_qd(qd).ok(); // Пытаемся закрыть при ошибке
+            bail!("Ошибка подключения: {:?}", qr.qr_ret);
+        }
+
+        println!("TCP Handshake завершен. Соединение ESTABLISHED (QD: {:?})", qd);
+        Ok(qd)
+    }
+
+    /// 2. Отдельный метод для отправки данных (можно вызывать многократно)
+    pub fn send(&mut self, qd: QDesc, message: &str) -> Result<()> {
+        let payload = message.as_bytes();
+        let sga = self.make_sgarray(payload)?;
+
+        let qt: QToken = self.libos.push(qd, &sga)?;
+        let qr: demi_qresult_t = self.libos.wait(qt, Some(TIMEOUT_SECONDS))?;
+
+        // Важно: sgafree вызывается СРАЗУ после wait, чтобы не было утечек DMA памяти
+        self.libos.sgafree(sga)?;
+
+        if qr.qr_opcode != demi_opcode_t::DEMI_OPC_PUSH {
+            bail!("Ошибка при PUSH: {:?}", qr.qr_ret);
+        }
+
+        println!("Отправлено: \"{}\"", message);
+        Ok(())
+    }
+
+    /// 3. Отдельный метод для закрытия
+    pub fn close(&mut self, qd: QDesc) -> Result<()> {
+        println!("Инициируем закрытие соединения (QD: {:?})...", qd);
+        self.issue_close_and_deregister_qd(qd)?;
+        Ok(())
+    }
 }
 
 fn main() -> Result<()> {
@@ -114,8 +157,20 @@ fn main() -> Result<()> {
     let libos = LibOS::new(libos_name, None)?;
     let mut client = TcpClient::new(libos, remote_addr)?;
 
-    // Запускаем процесс
-    client.connect_and_send("Hello from Demikernel Mellanox Client!")?;
+    // 1. Подключаемся ОДИН раз
+    let qd = client.connect()?;
+
+    // 2. Отправляем данные МНОГО раз в том же соединении
+    for i in 1..=5 {
+        let msg = format!("Message number {} from Mellanox", i);
+        client.send(qd, &msg)?;
+
+        // Небольшая пауза, чтобы в Wireshark пакеты не склеились (опционально)
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    // 3. Закрываем ОДИН раз
+    client.close(qd)?;
 
     Ok(())
 }

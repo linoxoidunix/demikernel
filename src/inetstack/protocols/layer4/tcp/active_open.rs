@@ -136,8 +136,9 @@ impl SharedActiveOpenSocket {
             self.remote.ip(),
             self.tcp_config.get_rx_checksum_offload(),
         );
+        let l4_header_len: usize = tcp_hdr.compute_size();
         self.layer3_endpoint
-            .transmit_tcp_packet_nonblocking(dst_ipv4_addr, pkt)?;
+            .transmit_tcp_packet_nonblocking(dst_ipv4_addr, l4_header_len, pkt)?;
 
         let mut remote_window_scale_bits = None;
         let mut mss = FALLBACK_MSS;
@@ -223,6 +224,7 @@ impl SharedActiveOpenSocket {
         for _ in 0..handshake_retries {
             // Set up SYN packet.
             let mut tcp_hdr = TcpHeader::new(self.local.port(), self.remote.port());
+            let l4_header_len = tcp_hdr.compute_size();
             tcp_hdr.syn = true;
             tcp_hdr.seq_num = self.local_isn;
             tcp_hdr.window_size = self.tcp_config.get_receive_window_size();
@@ -246,7 +248,7 @@ impl SharedActiveOpenSocket {
             // Send SYN.
             if let Err(e) = self
                 .layer3_endpoint
-                .transmit_tcp_packet_blocking(dst_ipv4_addr, pkt)
+                .transmit_tcp_packet_blocking(dst_ipv4_addr, l4_header_len, pkt)
                 .await
             {
                 warn!("Could not send SYN: {:?}", e);

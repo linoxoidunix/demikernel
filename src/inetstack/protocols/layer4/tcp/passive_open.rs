@@ -234,6 +234,10 @@ impl SharedPassiveSocket {
             tcp_hdr.ack_num = ack_num;
         }
 
+        // ВЫЧИСЛЯЕМ РАЗМЕР ЗДЕСЬ
+        // Для RST без опций это будет 20. Если добавите опции — станет больше.
+        let l4_len: usize = tcp_hdr.compute_size();
+
         // Add headers in reverse.
         let mut pkt: DemiBuffer = DemiBuffer::new_with_headroom(0, MAX_HEADER_SIZE as u16);
         tcp_hdr.serialize_and_attach(
@@ -244,7 +248,10 @@ impl SharedPassiveSocket {
         );
 
         // Pass on to send through the L2 layer.
-        if let Err(e) = self.layer3_endpoint.transmit_tcp_packet_nonblocking(dst_ipv4_addr, pkt) {
+        if let Err(e) = self
+            .layer3_endpoint
+            .transmit_tcp_packet_nonblocking(dst_ipv4_addr, l4_len, pkt)
+        {
             warn!("Could not send RST: {:?}", e);
         }
     }
@@ -328,6 +335,7 @@ impl SharedPassiveSocket {
         remote: SocketAddrV4,
     ) -> Result<(), Fail> {
         let mut tcp_hdr = TcpHeader::new(self.local.port(), remote.port());
+        let l4_header_len = tcp_hdr.compute_size();
         tcp_hdr.syn = true;
         tcp_hdr.seq_num = local_isn;
         tcp_hdr.ack = true;
@@ -351,7 +359,7 @@ impl SharedPassiveSocket {
             self.tcp_config.get_rx_checksum_offload(),
         );
         self.layer3_endpoint
-            .transmit_tcp_packet_blocking(dst_ipv4_addr, pkt)
+            .transmit_tcp_packet_blocking(dst_ipv4_addr, l4_header_len, pkt)
             .await
     }
 

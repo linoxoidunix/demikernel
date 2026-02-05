@@ -78,6 +78,8 @@ pub struct Icmpv4Peer {
 
     gateway_ipv4_addr: Option<Ipv4Addr>,
     local_netmask: Option<Ipv4Addr>,
+    /// enable hardware checksum calculate for ipv4
+    pub ipv4_checksum_offload: bool,
     /// Underlying ARP Peer
     arp: SharedArpPeer,
 
@@ -112,6 +114,7 @@ impl SharedIcmpv4Peer {
             local_ipv4_addr: config.local_ipv4_addr()?,
             gateway_ipv4_addr: config.gateway_ipv4_addr(),
             local_netmask: config.local_netmask(),
+            ipv4_checksum_offload: config.tcp_checksum_offload()?,
             arp: arp.clone(),
             recv_queue: AsyncQueue::<(Ipv4Header, DemiBuffer)>::default(),
             seq: Wrapping(0),
@@ -290,7 +293,7 @@ impl SharedIcmpv4Peer {
         // 4. СБОРКА IP: Здесь dst_ip ВСЕГДА оригинальный (цель)
         // Это важно: роутер должен увидеть в IP-заголовке конечный адрес!
         let ip_header = Ipv4Header::new(self.local_ipv4_addr, dst_ip, IpProtocol::ICMPv4);
-        ip_header.serialize_and_attach(&mut buffer);
+        ip_header.serialize_and_attach(&mut buffer, self.ipv4_checksum_offload);
 
         // 5. ОТПРАВКА: Пакет уходит на MAC шлюза, но с IP цели внутри
         self.layer2_endpoint.transmit_ipv4_packet(dst_mac, buffer)

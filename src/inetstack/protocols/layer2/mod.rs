@@ -10,6 +10,7 @@ pub use self::ethernet2::{
     header::{Ethernet2Header, ETHERNET2_HEADER_SIZE, MIN_PAYLOAD_SIZE},
     protocol::EtherType2,
 };
+use crate::inetstack::protocols::layer3::IpProtocol;
 
 //======================================================================================================================
 // Imports
@@ -81,6 +82,22 @@ impl SharedLayer2Endpoint {
         let mut packets = ArrayVec::new();
         packets.push(packet);
         self.transmit(remote_mac, EtherType2::Ipv4, packets)
+    }
+
+    pub fn transmit_ipv4_packet_with_offload(
+        &mut self,
+        remote_mac: MacAddress,
+        mut pkt: DemiBuffer,
+        l3_len: u8,
+        l4_header_len: u8,
+        protocol: IpProtocol,
+    ) -> Result<(), Fail> {
+        let header = Ethernet2Header::new(remote_mac, self.local_mac, EtherType2::Ipv4);
+        header.serialize_and_attach(&mut pkt);
+        // Финальный прыжок: передаем в DPDK рантайм
+        // Здесь l2_len всегда 14 (Ethernet2Header::SIZE)
+        self.layer1_endpoint
+            .transmit_with_offload(pkt, ETHERNET2_HEADER_SIZE as u8, l3_len, l4_header_len, protocol)
     }
 
     fn bad_dst(&self, header: &Ethernet2Header) -> bool {

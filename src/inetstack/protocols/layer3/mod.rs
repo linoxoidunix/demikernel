@@ -160,26 +160,49 @@ impl SharedLayer3Endpoint {
         dst == self.local_ip || dst.is_broadcast()
     }
 
-    pub fn transmit_tcp_packet_nonblocking(&mut self, remote_ip: Ipv4Addr, pkt: DemiBuffer) -> Result<(), Fail> {
+    pub fn transmit_tcp_packet_nonblocking(
+        &mut self,
+        remote_ip: Ipv4Addr,
+        l4_header_len: usize,
+        pkt: DemiBuffer,
+    ) -> Result<(), Fail> {
+        // 1. Определяем, куда отправлять пакет (шлюз или прямой хост)
         let next_hop = self.get_next_hop(remote_ip);
+
+        // 2. Ищем MAC-адрес в ARP-таблице
         let remote_mac = match self.arp.try_query(next_hop) {
             Some(mac) => mac,
-            _ => return Err(Fail::new(libc::EAGAIN, "destination not in ARP cache")),
+            _ => {
+                // Если адреса нет, инициируем ARP-запрос (обычно делается внутри try_query)
+                return Err(Fail::new(libc::EAGAIN, "destination not in ARP cache"));
+            },
         };
 
-        self.transmit_packet(remote_ip, remote_mac, IpProtocol::TCP, pkt)
+        // 3. Передаем пакет дальше с указанием протокола и длины заголовка L4
+        // Теперь transmit_packet должен уметь обрабатывать l4_len для настройки mbuf
+        self.transmit_packet(remote_ip, remote_mac, IpProtocol::TCP, l4_header_len, pkt)
     }
 
-    pub async fn transmit_tcp_packet_blocking(&mut self, remote_ip: Ipv4Addr, pkt: DemiBuffer) -> Result<(), Fail> {
+    pub async fn transmit_tcp_packet_blocking(
+        &mut self,
+        remote_ip: Ipv4Addr,
+        l4_header_len: usize,
+        pkt: DemiBuffer,
+    ) -> Result<(), Fail> {
         let next_hop = self.get_next_hop(remote_ip);
         let remote_mac = self.arp.query(next_hop).await?;
-        self.transmit_packet(remote_ip, remote_mac, IpProtocol::TCP, pkt)
+        self.transmit_packet(remote_ip, remote_mac, IpProtocol::TCP, l4_header_len, pkt)
     }
 
-    pub async fn transmit_udp_packet_blocking(&mut self, remote_ip: Ipv4Addr, pkt: DemiBuffer) -> Result<(), Fail> {
+    pub async fn transmit_udp_packet_blocking(
+        &mut self,
+        remote_ip: Ipv4Addr,
+        l4_header_len: usize,
+        pkt: DemiBuffer,
+    ) -> Result<(), Fail> {
         let next_hop = self.get_next_hop(remote_ip);
         let remote_mac = self.arp.query(next_hop).await?;
-        self.transmit_packet(remote_ip, remote_mac, IpProtocol::UDP, pkt)
+        self.transmit_packet(remote_ip, remote_mac, IpProtocol::UDP, l4_header_len, pkt)
     }
 
     pub fn transmit_packet(
@@ -187,13 +210,28 @@ impl SharedLayer3Endpoint {
         remote_ip: Ipv4Addr,    // Это IP конечного узла (идет в IP заголовок)
         remote_mac: MacAddress, // Это MAC следующего узла (идет в Ethernet заголовок)
         ip_protocol: IpProtocol,
+        l4_header_len: usize,
         mut pkt: DemiBuffer,
     ) -> Result<(), Fail> {
         let header = Ipv4Header::new(self.local_ip, remote_ip, ip_protocol);
+
+        // СТАТИКА: Вычисляем размер заголовка ДО сериализации
+        // Обычно это 20 байт, но если Ipv4Header поддерживает опции,
+        // метод header.compute_size() вернет точное значение.
+        let ihl = header.compute_size();
+
         debug!("L3 OUTGOING {:?}", header);
-        header.serialize_and_attach(&mut pkt);
-        debug!("L3 OUTGOING ACTUAL: {:?}", header);
-        self.layer2_endpoint.transmit_ipv4_packet(remote_mac, pkt)
+        header.serialize_and_attach(&mut pkt, self.icmpv4.ipv4_checksum_offload);
+
+        // Теперь передаем размер заголовка и протокол в Layer2
+        // Нам нужно добавить эти аргументы в transmit_ipv4_packet
+        self.layer2_endpoint.transmit_ipv4_packet_with_offload(
+            remote_mac,
+            pkt,
+            ihl as u8,
+            l4_header_len as u8,
+            ip_protocol,
+        )
     }
 
     pub fn get_local_addr(&self) -> Ipv4Addr {

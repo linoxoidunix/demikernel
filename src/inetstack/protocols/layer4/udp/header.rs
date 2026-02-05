@@ -43,6 +43,11 @@ impl UdpHeader {
         Self { src_port, dest_port }
     }
 
+    /// Returns the size of the UDP header (always 8 bytes).
+    pub fn compute_size(&self) -> usize {
+        UDP_HEADER_SIZE
+    }
+
     /// Returns the source port stored in the target UDP header.
     pub fn src_port(&self) -> u16 {
         self.src_port

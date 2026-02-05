@@ -226,7 +226,7 @@ impl Ipv4Header {
 
     /// Serializes the IPv4 header and prepends it to the packet in [buf]. Assumes that there is enough headroom for
     /// the header.
-    pub fn serialize_and_attach(&self, buf: &mut DemiBuffer) {
+    pub fn serialize_and_attach(&self, buf: &mut DemiBuffer, calc_hardware_ipv4_checksum_offload: bool) {
         buf.prepend(IPV4_HEADER_MIN_SIZE as usize)
             .expect("Should be sufficient headroom");
         let pkt_size_bytes = buf.len();
@@ -259,20 +259,25 @@ impl Ipv4Header {
         // Destination Address.
         buf[16..20].copy_from_slice(&self.dst_addr.octets());
         // ВАЖНО: Обнуляем поле чексуммы в буфере.
-        // Без этого compute_checksum посчитает сумму вместе с тем, что там лежало раньше.
         // 1. ПРИНУДИТЕЛЬНО обнуляем поле чексуммы в буфере перед расчетом
+        // не уверен что для hardware это надо
         if buf.len() >= 12 {
             buf[10] = 0;
             buf[11] = 0;
         }
+        //activate software checksum calculate
+        if !calc_hardware_ipv4_checksum_offload {
+            // 2. Считаем чексумму ТОЛЬКО по заголовку (20 байт)
+            let checksum = Self::compute_checksum(&buf[..IPV4_HEADER_MIN_SIZE as usize]);
 
-        // 2. Считаем чексумму ТОЛЬКО по заголовку (20 байт)
-        let checksum = Self::compute_checksum(&buf[..IPV4_HEADER_MIN_SIZE as usize]);
-
-        // 3. Записываем результат обратно в буфер
-        buf[10..12].copy_from_slice(&checksum.to_be_bytes());
-
-        debug!("L3 Checksum fixed: 0x{:04x} for total_len: {}", checksum, buf.len());
+            // 3. Записываем результат обратно в буфер
+            buf[10..12].copy_from_slice(&checksum.to_be_bytes());
+            debug!(
+                "L3 Checksum fixed calc by software: 0x{:04x} for total_len: {}",
+                checksum,
+                buf.len()
+            );
+        }
     }
 
     pub fn src_addr(&self) -> Ipv4Addr {

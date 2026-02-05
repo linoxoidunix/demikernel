@@ -694,9 +694,10 @@ impl Sender {
             cb.remote.ip(),
             cb.tcp_config.get_tx_checksum_offload(),
         );
+        let l4_header_len: usize = header.compute_size();
 
         // Call lower L3 layer to send the segment.
-        if let Err(e) = layer3_endpoint.transmit_tcp_packet_nonblocking(remote_ipv4_addr, pkt) {
+        if let Err(e) = layer3_endpoint.transmit_tcp_packet_nonblocking(remote_ipv4_addr, l4_header_len, pkt) {
             warn!("could not emit packet: {:?}", e);
             return;
         }
