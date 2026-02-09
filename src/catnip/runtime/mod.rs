@@ -29,9 +29,10 @@ use crate::{
             rte_eth_rss_ip, rte_eth_rx_burst, rte_eth_rx_mq_mode_RTE_ETH_MQ_RX_RSS as RTE_ETH_MQ_RX_RSS,
             rte_eth_rx_offload_tcp_cksum, rte_eth_rx_offload_udp_cksum, rte_eth_rx_queue_setup, rte_eth_rxconf,
             rte_eth_tx_burst, rte_eth_tx_mq_mode_RTE_ETH_MQ_TX_NONE as RTE_ETH_MQ_TX_NONE,
-            rte_eth_tx_offload_multi_segs, rte_eth_tx_offload_tcp_cksum, rte_eth_tx_offload_udp_cksum,
-            rte_eth_tx_queue_setup, rte_eth_txconf, rte_mbuf, RTE_ETHER_MAX_JUMBO_FRAME_LEN, RTE_ETHER_MAX_LEN,
-            RTE_ETH_DEV_NO_OWNER, RTE_ETH_LINK_FULL_DUPLEX, RTE_ETH_LINK_UP, RTE_PKTMBUF_HEADROOM,
+            rte_eth_tx_offload_multi_segs, rte_eth_tx_offload_tcp_cksum, rte_eth_tx_offload_tcp_tso,
+            rte_eth_tx_offload_udp_cksum, rte_eth_tx_queue_setup, rte_eth_txconf, rte_mbuf, rte_mbuf_f_tx_tcp_cksum,
+            rte_mbuf_f_tx_tcp_seg, RTE_ETHER_MAX_JUMBO_FRAME_LEN, RTE_ETHER_MAX_LEN, RTE_ETH_DEV_NO_OWNER,
+            RTE_ETH_LINK_FULL_DUPLEX, RTE_ETH_LINK_UP, RTE_PKTMBUF_HEADROOM,
         },
         memory::{DemiBuffer, DemiMemoryAllocator},
         SharedObject,
@@ -63,6 +64,8 @@ pub struct DPDKRuntime {
     port_id: u16,
     tcp_checksum_offload: bool,
     udp_checksum_offload: bool,
+    tcp_seg_offset: Option<bool>,
+    mtu: u16,
 }
 
 #[derive(Clone)]
@@ -90,8 +93,11 @@ impl SharedDPDKRuntime {
 
         let tcp_offload = config.tcp_checksum_offload().is_ok_and(|x| x);
         let udp_offload = config.udp_checksum_offload().is_ok_and(|x| x);
+        let tcp_seg_offset: Option<bool> = config.tcp_seg_offload().ok();
+        let mtu = config.mtu()?;
+        //let mss = config.mss()?;
 
-        Self::dpdk_initialize_port(&mem_pool, port_id, jumbo, config.mtu()?, tcp_offload, udp_offload)?;
+        Self::dpdk_initialize_port(&mem_pool, port_id, jumbo, mtu, tcp_offload, udp_offload, tcp_seg_offset)?;
 
         Ok(Self(SharedObject::<DPDKRuntime>::new(DPDKRuntime {
             max_body_size,
@@ -99,6 +105,8 @@ impl SharedDPDKRuntime {
             port_id,
             tcp_checksum_offload: tcp_offload,
             udp_checksum_offload: udp_offload,
+            tcp_seg_offset,
+            mtu,
         })))
     }
 
@@ -150,6 +158,7 @@ impl SharedDPDKRuntime {
         mtu: u16,
         tcp_checksum_offload: bool,
         udp_checksum_offload: bool,
+        tcp_seg_offset: Option<bool>,
     ) -> Result<(), Fail> {
         let (rx_rings, tx_rings) = (1, 1);
         let (rx_ring_size, tx_ring_size) = (2048, 2048);
@@ -197,9 +206,20 @@ impl SharedDPDKRuntime {
         if udp_checksum_offload {
             port_conf.txmode.offloads |= unsafe { rte_eth_tx_offload_udp_cksum() as u64 };
         }
-        port_conf.txmode.offloads |= unsafe { rte_eth_tx_offload_multi_segs() as u64 };
         if tcp_checksum_offload || udp_checksum_offload {
             port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM as u64;
+        }
+        // ВКЛЮЧАЕМ МУЛЬТИ-СЕГМЕНТНУЮ ПЕРЕДАЧУ (нужна для GSO/TSO)
+        port_conf.txmode.offloads |= unsafe { rte_eth_tx_offload_multi_segs() as u64 };
+        // Проверяем, поддерживает ли карта TSO, и если в аргументах передано разрешение (tcp_seg_offset)
+        if let Some(true) = tcp_seg_offset {
+            let mask_rte_eth_tx_offload_tcp_tso = unsafe { rte_eth_tx_offload_tcp_tso() };
+            if (dev_info.tx_offload_capa & mask_rte_eth_tx_offload_tcp_tso) != 0 {
+                println!("DPDK: Enabling Hardware TCP Segmentation Offload (TSO)");
+                port_conf.txmode.offloads |= mask_rte_eth_tx_offload_tcp_tso;
+            } else {
+                warn!("DPDK: TSO requested but NOT supported by hardware.");
+            }
         }
         // RX config
         println!("DEBUG TX Offloads: {:b}", port_conf.txmode.offloads);
@@ -216,6 +236,10 @@ impl SharedDPDKRuntime {
         tx_conf.tx_thresh.hthresh = tx_hthresh;
         tx_conf.tx_thresh.wthresh = tx_wthresh;
         tx_conf.tx_free_thresh = 32;
+
+        // Обновляем конфигурацию TX очереди (важно: передаем те же offloads в rx_conf/tx_conf)
+        tx_conf.offloads = port_conf.txmode.offloads;
+        rx_conf.offloads = port_conf.rxmode.offloads;
 
         if unsafe { rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf as *const _) } != 0 {
             let msg = format!("failed to configure ethernet device");
@@ -427,35 +451,87 @@ impl PhysicalLayer for SharedDPDKRuntime {
         protocol: IpProtocol,
     ) -> Result<(), Fail> {
         timer!("catnip::runtime::transmit_with_offload");
+        let packet_len = packet.len();
+        // 1. Get or allocate mbuf
+        // let mbuf_ptr = if packet.is_dpdk_allocated() {
+        //     packet
+        //         .into_mbuf()
+        //         .ok_or(Fail::new(libc::EINVAL, "failed to extract DPDK mbuf"))?
+        // } else if packet_len <= self.max_body_size {
+        //     let mut mbuf = self.dpdk_allocate_mbuf(packet.len())?;
+        //     mbuf.copy_from_slice(&packet);
+        //     mbuf.into_mbuf()
+        //         .ok_or(Fail::new(libc::EINVAL, "failed to convert copied buffer to mbuf"))?
+        // } else {
+        //     return Err(Fail::new(libc::EINVAL, "packet too large for DPDK buffer"));
+        // };
 
         // 1. Get or allocate mbuf
         let mbuf_ptr = if packet.is_dpdk_allocated() {
+            trace!("TX: Packet already DPDK allocated (len={})", packet_len);
             packet
                 .into_mbuf()
                 .ok_or(Fail::new(libc::EINVAL, "failed to extract DPDK mbuf"))?
-        } else if packet.len() <= self.max_body_size {
+        } else if packet_len <= self.max_body_size {
+            trace!(
+                "TX: Allocating single mbuf (len={}, max_body={})",
+                packet_len,
+                self.max_body_size
+            );
             let mut mbuf = self.dpdk_allocate_mbuf(packet.len())?;
             mbuf.copy_from_slice(&packet);
             mbuf.into_mbuf()
                 .ok_or(Fail::new(libc::EINVAL, "failed to convert copied buffer to mbuf"))?
         } else {
+            // ЛОГИРУЕМ ОШИБКУ: здесь мы понимаем, насколько пакет превысил лимит
+            error!(
+                "TX ERROR: Packet too large for single DPDK buffer! packet_len={}, max_body_size={}. TSO requires multi-segment mbufs or larger mempool.",
+                packet_len, self.max_body_size
+            );
             return Err(Fail::new(libc::EINVAL, "packet too large for DPDK buffer"));
         };
 
         unsafe {
             let m = &mut *mbuf_ptr;
             let mut ol_flags: u64 = 0;
+            let mut tx_offload: u64 = 0;
+            // MTU обычно 1500, но лучше брать из настроек рантайма
+            let mtu = self.mtu;
 
-            // 1. Сначала определяем флаги в зависимости от ваших настроек
-            if self.tcp_checksum_offload && protocol == IpProtocol::TCP {
-                // RTE_MBUF_F_TX_IPV4 (55) | RTE_MBUF_F_TX_IP_CKSUM (54) | RTE_MBUF_F_TX_TCP_CKSUM (52)
-                ol_flags |= (1 << 55) | (1 << 54) | (1 << 52);
-            } else if self.udp_checksum_offload && protocol == IpProtocol::UDP {
-                // RTE_MBUF_F_TX_IPV4 (55) | RTE_MBUF_F_TX_IP_CKSUM (54) | RTE_MBUF_F_TX_UDP_CKSUM (3 << 52)
-                ol_flags |= (1 << 55) | (1 << 54) | (3 << 52);
+            // Длина заголовка IPv4 без опций — 20 байт.
+            // Длина заголовка TCP без опций — 20 байт.
+            // MSS = 1500 - 20 - 20 = 1460.
+            //в кинфиге задан mss, но здесь мы его вычисляем программно
+            let mss = (mtu - (l3_header_len as u16) - (l4_header_len as u16)) as u64;
+
+            if protocol == IpProtocol::TCP {
+                // Базовые флаги: IPv4 + Checksum IP
+                ol_flags |= (1 << 55) | (1 << 54);
+                let payload_len = packet_len as i32 - (l2_header_len + l3_header_len + l4_header_len) as i32;
+                // Если включен TSO и пакет реально большой
+                if self.tcp_seg_offset.unwrap_or(false) && payload_len > mss as i32 {
+                    // Получаем правильную маску бита из DPDK (вместо 1 << 50)
+                    let tcp_seg_bit = rte_mbuf_f_tx_tcp_seg();
+                    // Получаем маску для чексуммы (вместо 1 << 52)
+                    let tcp_cksum_bit = rte_mbuf_f_tx_tcp_cksum(); // Или rte_mbuf_f_tx_tcp_cksum()
+                    ol_flags |= tcp_seg_bit | tcp_cksum_bit;
+                    // Заполняем MSS в биты 24-39
+                    tx_offload |= (mss & 0xFFFF) << 24;
+                } else if self.tcp_checksum_offload {
+                    // Просто чексумма TCP
+                    ol_flags |= 1 << 52;
+                }
+            } else if protocol == IpProtocol::UDP {
+                ol_flags |= (1 << 55) | (1 << 54); // IPv4 + IP CKSUM
+
+                if self.udp_checksum_offload {
+                    ol_flags |= 3 << 52; // L4_CKSUM_MASK для UDP
+                }
+
+                // ВНИМАНИЕ: Для UDP мы решили нарезать программно в цикле ДО этого блока,
+                // так как бит 6 (UDP_TSO) у карты выключен.
+                // Здесь пакет уже должен быть <= MTU.
             } else {
-                // Если оффлоад выключен, чексуммы не считаем,
-                // но флаг IPV4 (55) лучше оставить, если это IP-пакет.
                 ol_flags |= 1 << 55;
             }
 
@@ -467,7 +543,10 @@ impl PhysicalLayer for SharedDPDKRuntime {
             let l3 = (l3_header_len as u64 & 0x1FF) << 7;
             let l4 = (l4_header_len as u64 & 0xFF) << 16;
 
-            m.__bindgen_anon_3.tx_offload = l2 | l3 | l4;
+            // ВАЖНО: Используем |= чтобы добавить l2, l3, l4 к уже имеющемуся MSS в tx_offload
+            tx_offload |= l2 | l3 | l4;
+
+            m.__bindgen_anon_3.tx_offload = tx_offload;
         }
 
         // 3. Transmit

@@ -45,6 +45,7 @@ mod inetstack_config {
     pub const ENABLE_JUMBO_FRAMES: &str = "enable_jumbo_frames";
     pub const UDP_CHECKSUM_OFFLOAD: &str = "udp_checksum_offload";
     pub const TCP_CHECKSUM_OFFLOAD: &str = "tcp_checksum_offload";
+    pub const TCP_SEG_OFFLOAD: &str = "tcp_seg_offload";
     pub const GATEWAY_IPV4_ADDR: &str = "gateway_ipv4_addr";
     pub const LOCAL_NETMASK: &str = "local_netmask";
 }
@@ -506,6 +507,10 @@ impl Config {
 
     pub fn tcp_checksum_offload(&self) -> Result<bool, Fail> {
         Self::get_bool_option(self.inetstack_config()?, inetstack_config::TCP_CHECKSUM_OFFLOAD)
+    }
+
+    pub fn tcp_seg_offload(&self) -> Result<bool, Fail> {
+        Self::get_bool_option(self.inetstack_config()?, inetstack_config::TCP_SEG_OFFLOAD)
     }
 
     pub fn udp_checksum_offload(&self) -> Result<bool, Fail> {

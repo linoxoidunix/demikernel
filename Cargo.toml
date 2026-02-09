@@ -35,8 +35,10 @@ socket2 = "0.5.7"
 x86 = "0.52.0"
 yaml-rust = "0.4.5"
 
-# Demikernel crates (published on crates.io).
-demikernel-dpdk-bindings = { version = "1.1.8", optional = true }
+# Demikernel crates
+demikernel-dpdk-bindings = { git = "https://github.com/linoxoidunix/dpdk_bindings.git", tags = "1.1.9", optional = true }
+
+
 demikernel-network-simulator = { version = "0.1.0" }
 
 # Windows-specific dependencies.
@@ -125,7 +127,7 @@ name = "tcp-ping-pong"
 path = "examples/rust/tcp-ping-pong.rs"
 
 [features]
-default = ["catnap-libos"]
+default = ["catnip-libos"]
 catnap-libos = []
 catpowder-libos = []
 catnip-libos = ["libdpdk"]

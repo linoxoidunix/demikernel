@@ -67,32 +67,47 @@ pub fn into_sgarray(buffers: ArrayVec<DemiBuffer, DEMI_SGARRAY_MAXLEN>) -> Resul
 }
 
 pub fn sgaalloc<M: DemiMemoryAllocator>(size: usize, mem_alloc: &M) -> Result<demi_sgarray_t, Fail> {
+    // Recommended headroom for TCP/IP headers (128 bytes is usually enough,
+    // but 256 provides a safe margin for extra options or tunneling).
+    const RECOMMENDED_HEADROOM: u16 = 256;
+
+    // Retrieve the maximum payload capacity allowed per single buffer by the allocator.
+    let max_payload_per_buffer = mem_alloc.max_buffer_size_bytes();
+
     if size == 0 {
-        error!("sgaalloc(): cannot allocate zero-sized buffer");
         return Err(Fail::new(libc::EINVAL, "cannot allocate zero-sized buffer"));
     }
 
-    // First allocate the underlying DemiBuffer.
-    if size > mem_alloc.max_buffer_size_bytes() * DEMI_SGARRAY_MAXLEN {
-        return Err(Fail::new(libc::EINVAL, "size too large for a single demi_sgaseg_t"));
+    // Calculate the required number of segments (scatter-gather elements).
+    let full_chunks = size / max_payload_per_buffer;
+    let remainder = size % max_payload_per_buffer;
+    let total_needed_segments = if remainder > 0 { full_chunks + 1 } else { full_chunks };
+
+    if total_needed_segments > DEMI_SGARRAY_MAXLEN {
+        return Err(Fail::new(libc::EINVAL, "size too large: too many segments needed"));
     }
 
-    // Calculate the number of DemiBuffers to allocate.
-    let max_buffer_size_bytes: usize = mem_alloc.max_buffer_size_bytes();
-    let remainder: usize = size % max_buffer_size_bytes;
-    let len: usize = (size - remainder) / max_buffer_size_bytes;
     let mut bufs: ArrayVec<DemiBuffer, DEMI_SGARRAY_MAXLEN> = ArrayVec::new();
 
-    for _ in 0..len {
-        bufs.push(mem_alloc.allocate_demi_buffer(max_buffer_size_bytes)?);
+    // Allocate segments using the standard constructor with headroom.
+    for _ in 0..full_chunks {
+        // Request max_payload_per_buffer for data;
+        // the library ensures space for headers under the hood.
+        let buf = DemiBuffer::new_with_headroom(max_payload_per_buffer as u16, RECOMMENDED_HEADROOM);
+        bufs.push(buf);
     }
 
-    // If there is any remaining length, allocate a partial buffer.
+    // Allocate the final segment if there is remaining data.
     if remainder > 0 {
-        bufs.push(mem_alloc.allocate_demi_buffer(remainder)?);
+        let buf = DemiBuffer::new_with_headroom(remainder as u16, RECOMMENDED_HEADROOM);
+        bufs.push(buf);
     }
 
-    into_sgarray(bufs)
+    // Convert the collection of buffers into a Scatter-Gather Array (sga).
+    match into_sgarray(bufs) {
+        Ok(sga) => Ok(sga),
+        Err(e) => Err(e),
+    }
 }
 
 pub fn sgafree(sga: demi_sgarray_t) -> Result<(), Fail> {
