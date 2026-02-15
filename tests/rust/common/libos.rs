@@ -14,7 +14,6 @@ use ::demikernel::{
     inetstack::{consts::MAX_HEADER_SIZE, SharedInetStack},
     runtime::{
         fail::Fail,
-        logging,
         memory::{into_sgarray, DemiBuffer},
         types::DEMI_SGARRAY_MAXLEN,
         QDesc, QToken, SharedDemiRuntime,
@@ -42,7 +41,7 @@ impl DummyLibOS {
         let runtime: SharedDemiRuntime = SharedDemiRuntime::default();
         let network: SharedDummyRuntime = SharedDummyRuntime::new(rx, tx);
 
-        logging::initialize();
+        //logging::initialize();
         let transport = SharedInetStack::new(&config, runtime.clone(), network)?;
         Ok(Self(SharedNetworkLibOS::<SharedInetStack>::new(runtime, transport)))
     }

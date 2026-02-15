@@ -24,7 +24,7 @@ use crate::{
     },
     runtime::{
         fail::Fail,
-        limits, logging,
+        limits,
         network::socket::option::SocketOption,
         types::{demi_callback_t, demi_qresult_t, demi_sgarray_t},
         QDesc, QToken, SharedDemiRuntime,
@@ -57,7 +57,7 @@ pub enum LibOS {
 
 impl LibOS {
     pub fn new(libos_name: LibOSName, _perf_callback: Option<demi_callback_t>) -> Result<Self, Fail> {
-        logging::initialize();
+        //logging::initialize();
 
         let config_path = match env::var("CONFIG_PATH") {
             Ok(config_path) => config_path,

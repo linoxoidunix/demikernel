@@ -34,6 +34,7 @@ slab = "0.4.9"
 socket2 = "0.5.7"
 x86 = "0.52.0"
 yaml-rust = "0.4.5"
+core_affinity = "0.8"
 
 # Demikernel crates
 demikernel-dpdk-bindings = { git = "https://github.com/linoxoidunix/dpdk_bindings.git", tags = "1.1.9", optional = true }

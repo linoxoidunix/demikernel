@@ -13,13 +13,12 @@ use crate::{
     },
     runtime::{
         fail::Fail,
-        logging::{self, CallbackLogWriter},
         types::{demi_args_t, demi_qresult_t, demi_qtoken_t, demi_sgarray_t},
         QToken,
     },
     SocketOption,
 };
-use ::flexi_logger::Logger;
+// use ::flexi_logger::Logger;
 use ::libc::{c_int, c_void, sockaddr};
 use ::socket2::SockAddr;
 use ::std::{
@@ -47,15 +46,15 @@ pub unsafe extern "C" fn demi_init(args: *const demi_args_t) -> c_int {
         args.log_callback
     };
 
-    if let Some(log_callback) = log_callback {
-        logging::custom_initialize(move || {
-            Logger::try_with_env()
-                .unwrap()
-                .log_to_writer(Box::new(CallbackLogWriter::new(log_callback)))
-        });
-    } else {
-        logging::initialize();
-    }
+    // if let Some(log_callback) = log_callback {
+    //     logging::custom_initialize(move || {
+    //         Logger::try_with_env()
+    //             .unwrap()
+    //             .log_to_writer(Box::new(CallbackLogWriter::new(log_callback)))
+    //     });
+    // } else {
+    //     logging::initialize();
+    // }
 
     trace!("demi_init()");
 

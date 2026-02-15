@@ -10,7 +10,6 @@ use crate::{
     inetstack::protocols::layer1::PhysicalLayer,
     runtime::{
         fail::Fail,
-        logging,
         memory::{DemiBuffer, DemiMemoryAllocator},
         SharedDemiRuntime, SharedObject,
     },
@@ -41,7 +40,7 @@ pub struct SharedTestPhysicalLayer(SharedObject<TestPhysicalLayer>);
 
 impl SharedTestPhysicalLayer {
     pub fn new(now: Instant) -> Self {
-        logging::initialize();
+        //logging::initialize();
         Self(SharedObject::<TestPhysicalLayer>::new(TestPhysicalLayer {
             incoming: VecDeque::new(),
             outgoing: VecDeque::new(),

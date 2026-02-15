@@ -477,7 +477,51 @@ use std::env;
 //     Ok(())
 // }
 
+use flexi_logger::{DeferredNow, FileSpec, Logger, Record, WriteMode};
+use std::thread;
+
+fn nanoseconds_format(w: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Record) -> std::io::Result<()> {
+    write!(
+        w,
+        "[{}] {} [{}] {}",
+        now.format("%Y-%m-%d %H:%M:%S%.9f"),
+        record.level(),
+        record.module_path().unwrap_or("<unnamed>"),
+        record.args()
+    )
+}
+
 fn main() -> Result<()> {
+    let logger_builder = Logger::try_with_env_or_str("info").unwrap()
+        .format(nanoseconds_format)
+        .log_to_file(FileSpec::default().directory("logs").basename("wss_client"))
+        // Использовать режим "Буферизируй, но не флашни сам"
+        .write_mode(WriteMode::BufferDontFlushWith(128 * 1024)); // Большой буфер 128КБ
+
+    // Стартуем и получаем Handle
+    let logger_handle = logger_builder.start().expect("Failed to start logger");
+
+    // 2. Создаем наш поток-флашер
+    let flush_handle = logger_handle.clone();
+    thread::spawn(move || {
+        // Привязываем этот поток к последнему ядру
+        if let Some(core) = core_affinity::get_core_ids().and_then(|cores| cores.last().cloned()) {
+            core_affinity::set_for_current(core);
+            println!("Custom Flusher Thread pinned to core {:?}", core.id);
+        }
+
+        let flush_interval = Duration::from_micros(500); // Например, каждые 500 мкс
+
+        loop {
+            // Принудительный сброс буферов на диск
+            flush_handle.flush();
+
+            // Спим. Для экстремальной точности можно использовать spin_loop,
+            // но для флаша логов обычный sleep достаточен и бережет ресурсы.
+            thread::sleep(flush_interval);
+        }
+    });
+
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("Использование: ./tcp_client <IP:PORT>");
