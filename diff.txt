@@ -1,0 +1,145 @@
+diff --git a/examples/tcp_client.rs b/examples/tcp_client.rs
+index 5a8dca39..95fc7cc1 100644
+--- a/examples/tcp_client.rs
++++ b/examples/tcp_client.rs
+@@ -535,13 +535,18 @@ fn main() -> Result<()> {
+     let mut client = FastTcpClient::new(libos, remote_addr);
+     let qd = client.connect()?;
+ 
+-    let data = vec![0x41; 30000];
++    //let data = vec![0x41; 30000];
+ 
+-    for i in 0..2 {
++    for i in 0..1 {
+         println!("Отправка пакета №{}", i);
+-
++        let mut big_data = Vec::with_capacity(6000);
++        for i in 0..6000 {
++            // Каждый байт будет содержать значение 0-255, повторяющееся циклом,
++            // но в сумме это создаст узнаваемый "инкрементный" паттерн.
++            big_data.push((i % 256) as u8);
++        }
+         // Отправляем и ждем освобождения ресурсов
+-        client.send_and_wait(qd, &data)?;
++        client.send_and_wait(qd, &big_data)?;
+ 
+         // В этой точке память sga уже гарантированно свободна,
+         // и мы можем начинать следующую итерацию без риска утечки.
+diff --git a/src/inetstack/protocols/layer3/mod.rs b/src/inetstack/protocols/layer3/mod.rs
+index adc9938c..29b74725 100644
+--- a/src/inetstack/protocols/layer3/mod.rs
++++ b/src/inetstack/protocols/layer3/mod.rs
+@@ -57,6 +57,7 @@ pub struct Layer3Endpoint {
+     local_ip: Ipv4Addr,
+     gateway_ipv4_addr: Option<Ipv4Addr>,
+     local_netmask: Option<Ipv4Addr>,
++    send_config_mss: usize,
+ }
+ 
+ #[derive(Clone)]
+@@ -76,7 +77,7 @@ impl SharedLayer3Endpoint {
+         let arp = SharedArpPeer::new(config, runtime.clone(), layer2_endpoint.clone())?;
+         let gateway_ipv4_addr = config.gateway_ipv4_addr();
+         let local_netmask = config.local_netmask();
+-
++        let send_config_mss: usize = config.mss().map(|m| m as usize).unwrap_or(1460);
+         Ok(SharedLayer3Endpoint(SharedObject::new(Layer3Endpoint {
+             arp: arp.clone(),
+             icmpv4: SharedIcmpv4Peer::new(config, runtime, layer2_endpoint.clone(), arp, rng_seed)?,
+@@ -84,6 +85,7 @@ impl SharedLayer3Endpoint {
+             layer2_endpoint,
+             gateway_ipv4_addr,
+             local_netmask,
++            send_config_mss,
+         })))
+     }
+ 
+@@ -110,6 +112,11 @@ impl SharedLayer3Endpoint {
+         }
+     }
+ 
++    //return mss from config
++    pub fn send_config_mss(&self) -> usize {
++        self.send_config_mss
++    }
++
+     pub fn receive(
+         &mut self,
+     ) -> Result<ArrayVec<(Ipv4Addr, IpProtocol, DemiBuffer), MAX_BATCH_SIZE_NUM_PACKETS>, Fail> {
+diff --git a/src/inetstack/protocols/layer4/mod.rs b/src/inetstack/protocols/layer4/mod.rs
+index afd07d95..b63a0667 100644
+--- a/src/inetstack/protocols/layer4/mod.rs
++++ b/src/inetstack/protocols/layer4/mod.rs
+@@ -109,6 +109,11 @@ impl Peer {
+         }
+     }
+ 
++    //return mss from config
++    pub fn send_config_mss(&self) -> usize {
++        self.layer3_endpoint.send_config_mss()
++    }
++
+     pub fn socket(&mut self, domain: Domain, typ: Type) -> Result<Socket, Fail> {
+         // TODO: Remove this once we support Ipv6.
+         if domain != Domain::IPV4 {
+@@ -401,4 +406,10 @@ impl DemiMemoryAllocator for Peer {
+     fn allocate_demi_buffer(&self, size: usize) -> Result<DemiBuffer, Fail> {
+         self.layer3_endpoint.allocate_demi_buffer(size)
+     }
++
++    fn max_send_size_bytes(&self) -> usize {
++        //на будущее переопределяем дефолтное значение трейта, если оно не равно 1460
++        //1460 - максимальный размер payload для tcp
++        self.send_config_mss()
++    }
+ }
+diff --git a/src/inetstack/protocols/layer4/tcp/established/sender.rs b/src/inetstack/protocols/layer4/tcp/established/sender.rs
+index f1b76e28..b92ffa61 100644
+--- a/src/inetstack/protocols/layer4/tcp/established/sender.rs
++++ b/src/inetstack/protocols/layer4/tcp/established/sender.rs
+@@ -419,6 +419,7 @@ impl Sender {
+                 (segment.len(), true)
+             }
+         };
++
+         let segment_data = segment
+             .split_front(frame_size_bytes)
+             .expect("Should be able to split within the length of the buffer");
+diff --git a/src/runtime/memory/mod.rs b/src/runtime/memory/mod.rs
+index 099c9703..9ada7063 100644
+--- a/src/runtime/memory/mod.rs
++++ b/src/runtime/memory/mod.rs
+@@ -32,6 +32,11 @@ pub trait DemiMemoryAllocator {
+         u16::MAX as usize
+     }
+ 
++    fn max_send_size_bytes(&self) -> usize {
++        //1460 - максимальный размер payload для tcp
++        1460
++    }
++
+     fn allocate_demi_buffer(&self, size: usize) -> Result<DemiBuffer, Fail> {
+         Ok(DemiBuffer::new(size as u16))
+     }
+@@ -66,13 +71,20 @@ pub fn into_sgarray(buffers: ArrayVec<DemiBuffer, DEMI_SGARRAY_MAXLEN>) -> Resul
+     Ok(sga)
+ }
+ 
++//вроде бы эта фукнция вызывается только для tcp
+ pub fn sgaalloc<M: DemiMemoryAllocator>(size: usize, mem_alloc: &M) -> Result<demi_sgarray_t, Fail> {
+     // Recommended headroom for TCP/IP headers (128 bytes is usually enough,
+     // but 256 provides a safe margin for extra options or tunneling).
+     const RECOMMENDED_HEADROOM: u16 = 256;
+ 
+     // Retrieve the maximum payload capacity allowed per single buffer by the allocator.
+-    let max_payload_per_buffer = mem_alloc.max_buffer_size_bytes();
++    // We must ensure the buffer size does not exceed the TCP MSS (typically 1460 bytes).
++    // If a single buffer is larger than the MSS, the Demikernel TCP stack's current
++    // 'push' implementation may incorrectly handle the remaining data (leftovers),
++    // leading to out-of-order delivery or duplicated data segments.
++    // To avoid rewriting the underlying TCP segment transmission logic, we
++    // constrain each scatter-gather element to a maximum of 1460 bytes.
++    let max_payload_per_buffer = mem_alloc.max_send_size_bytes();
+ 
+     if size == 0 {
+         return Err(Fail::new(libc::EINVAL, "cannot allocate zero-sized buffer"));

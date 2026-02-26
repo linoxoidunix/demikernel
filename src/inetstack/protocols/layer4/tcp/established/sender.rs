@@ -419,6 +419,7 @@ impl Sender {
                 (segment.len(), true)
             }
         };
+
         let segment_data = segment
             .split_front(frame_size_bytes)
             .expect("Should be able to split within the length of the buffer");

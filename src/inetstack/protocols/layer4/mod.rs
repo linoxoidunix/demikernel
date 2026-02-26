@@ -109,6 +109,11 @@ impl Peer {
         }
     }
 
+    //return mss from config
+    pub fn send_config_mss(&self) -> usize {
+        self.layer3_endpoint.send_config_mss()
+    }
+
     pub fn socket(&mut self, domain: Domain, typ: Type) -> Result<Socket, Fail> {
         // TODO: Remove this once we support Ipv6.
         if domain != Domain::IPV4 {
@@ -400,5 +405,11 @@ impl DemiMemoryAllocator for Peer {
 
     fn allocate_demi_buffer(&self, size: usize) -> Result<DemiBuffer, Fail> {
         self.layer3_endpoint.allocate_demi_buffer(size)
+    }
+
+    fn max_send_size_bytes(&self) -> usize {
+        //на будущее переопределяем дефолтное значение трейта, если оно не равно 1460
+        //1460 - максимальный размер payload для tcp
+        self.send_config_mss()
     }
 }

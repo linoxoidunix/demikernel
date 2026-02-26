@@ -32,6 +32,11 @@ pub trait DemiMemoryAllocator {
         u16::MAX as usize
     }
 
+    fn max_send_size_bytes(&self) -> usize {
+        //1460 - максимальный размер payload для tcp
+        1460
+    }
+
     fn allocate_demi_buffer(&self, size: usize) -> Result<DemiBuffer, Fail> {
         Ok(DemiBuffer::new(size as u16))
     }
@@ -66,13 +71,20 @@ pub fn into_sgarray(buffers: ArrayVec<DemiBuffer, DEMI_SGARRAY_MAXLEN>) -> Resul
     Ok(sga)
 }
 
+//вроде бы эта фукнция вызывается только для tcp
 pub fn sgaalloc<M: DemiMemoryAllocator>(size: usize, mem_alloc: &M) -> Result<demi_sgarray_t, Fail> {
     // Recommended headroom for TCP/IP headers (128 bytes is usually enough,
     // but 256 provides a safe margin for extra options or tunneling).
     const RECOMMENDED_HEADROOM: u16 = 256;
 
     // Retrieve the maximum payload capacity allowed per single buffer by the allocator.
-    let max_payload_per_buffer = mem_alloc.max_buffer_size_bytes();
+    // We must ensure the buffer size does not exceed the TCP MSS (typically 1460 bytes).
+    // If a single buffer is larger than the MSS, the Demikernel TCP stack's current
+    // 'push' implementation may incorrectly handle the remaining data (leftovers),
+    // leading to out-of-order delivery or duplicated data segments.
+    // To avoid rewriting the underlying TCP segment transmission logic, we
+    // constrain each scatter-gather element to a maximum of 1460 bytes.
+    let max_payload_per_buffer = mem_alloc.max_send_size_bytes();
 
     if size == 0 {
         return Err(Fail::new(libc::EINVAL, "cannot allocate zero-sized buffer"));

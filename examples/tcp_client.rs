@@ -535,13 +535,18 @@ fn main() -> Result<()> {
     let mut client = FastTcpClient::new(libos, remote_addr);
     let qd = client.connect()?;
 
-    let data = vec![0x41; 30000];
+    //let data = vec![0x41; 30000];
 
-    for i in 0..2 {
+    for i in 0..1 {
         println!("Отправка пакета №{}", i);
-
+        let mut big_data = Vec::with_capacity(6000);
+        for i in 0..6000 {
+            // Каждый байт будет содержать значение 0-255, повторяющееся циклом,
+            // но в сумме это создаст узнаваемый "инкрементный" паттерн.
+            big_data.push((i % 256) as u8);
+        }
         // Отправляем и ждем освобождения ресурсов
-        client.send_and_wait(qd, &data)?;
+        client.send_and_wait(qd, &big_data)?;
 
         // В этой точке память sga уже гарантированно свободна,
         // и мы можем начинать следующую итерацию без риска утечки.

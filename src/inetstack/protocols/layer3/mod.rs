@@ -57,6 +57,7 @@ pub struct Layer3Endpoint {
     local_ip: Ipv4Addr,
     gateway_ipv4_addr: Option<Ipv4Addr>,
     local_netmask: Option<Ipv4Addr>,
+    send_config_mss: usize,
 }
 
 #[derive(Clone)]
@@ -76,7 +77,7 @@ impl SharedLayer3Endpoint {
         let arp = SharedArpPeer::new(config, runtime.clone(), layer2_endpoint.clone())?;
         let gateway_ipv4_addr = config.gateway_ipv4_addr();
         let local_netmask = config.local_netmask();
-
+        let send_config_mss: usize = config.mss().map(|m| m as usize).unwrap_or(1460);
         Ok(SharedLayer3Endpoint(SharedObject::new(Layer3Endpoint {
             arp: arp.clone(),
             icmpv4: SharedIcmpv4Peer::new(config, runtime, layer2_endpoint.clone(), arp, rng_seed)?,
@@ -84,6 +85,7 @@ impl SharedLayer3Endpoint {
             layer2_endpoint,
             gateway_ipv4_addr,
             local_netmask,
+            send_config_mss,
         })))
     }
 
@@ -108,6 +110,11 @@ impl SharedLayer3Endpoint {
                 },
             }
         }
+    }
+
+    //return mss from config
+    pub fn send_config_mss(&self) -> usize {
+        self.send_config_mss
     }
 
     pub fn receive(
