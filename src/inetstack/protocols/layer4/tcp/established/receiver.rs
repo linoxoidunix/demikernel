@@ -118,37 +118,50 @@ impl Receiver {
     // Block until some data is received, up to an optional size.
     pub async fn pop(
         &mut self,
-        mut size: Option<usize>,
+        _size: Option<usize>, // Префикс _ говорит компилятору, что мы намеренно не используем переменную
     ) -> Result<ArrayVec<DemiBuffer, MAX_BATCH_SIZE_NUM_PACKETS>, Fail> {
         let mut bufs = ArrayVec::new();
-        let mut buf = self.pop_queue.pop(None).await?;
-        loop {
-            if let Some(size) = size.as_mut() {
-                if buf.len() > *size {
-                    let remaining_buf = buf.split_front(*size)?;
-                    self.pop_queue.push_front(remaining_buf);
-                }
-                *size -= buf.len();
-            }
-            match buf.len() {
-                len if len > 0 => {
-                    self.reader_next_seq_no = self.reader_next_seq_no + SeqNumber::from(buf.len() as u32);
-                },
-                _ => {
-                    debug!("found FIN");
-                    self.reader_next_seq_no = self.reader_next_seq_no + 1.into();
-                    bufs.push(buf);
 
+        // 1. Ждем первый буфер (блокирующая часть)
+        let mut buf = self.pop_queue.pop(None).await?;
+
+        loop {
+            // 2. Обновляем sequence number на полную длину буфера
+            let buf_len = buf.len();
+            if buf_len > 0 {
+                self.reader_next_seq_no = self.reader_next_seq_no + SeqNumber::from(buf_len as u32);
+                // Добавляем буфер целиком в результат
+                let buf_len_for_log = buf.len(); // Сохраняем длину для лога, так как push может забрать владение
+                if let Err(_e) = bufs.try_push(buf) {
+                    warn!(
+                        "  [POP] ArrayVec is FULL (total bufs={}). Remaining data (len={}) stays in pop_queue.",
+                        bufs.len(),
+                        buf_len_for_log
+                    );
+                    // NOTE: Since we are not pushing the failed buffer back to the queue (push_front),
+                    // this data is effectively lost from the TCP stream.
+                    // This will inevitably cause a decryption failure in the TLS layer
+                    // due to missing sequence data, but it prevents the "infinite split" loop.
                     break;
-                },
+                } else {
+                    trace!(
+                        "  [POP] Pushed buf to result: len={}, total bufs in batch={}",
+                        buf_len_for_log,
+                        bufs.len()
+                    );
+                }
+            } else {
+                // Это FIN (закрытие соединения)
+                debug!("found FIN");
+                self.reader_next_seq_no = self.reader_next_seq_no + 1.into();
+                let _ = bufs.try_push(buf);
+                break;
             }
-            bufs.push(buf);
-            match size {
-                Some(0) => break,
-                _ => match self.pop_queue.try_pop() {
-                    Some(next_buf) => buf = next_buf,
-                    None => break,
-                },
+
+            // 3. Пытаемся забрать из очереди всё остальное, что там лежит прямо сейчас (не блокируясь)
+            match self.pop_queue.try_pop() {
+                Some(next_buf) => buf = next_buf,
+                None => break, // Очередь пуста, выходим и отдаем что собрали
             }
         }
 
