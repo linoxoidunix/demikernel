@@ -125,7 +125,7 @@ impl Future for DummyCoroutine {
 
 #[test]
 fn test_async() -> Result<()> {
-    let mut coroutine = DummyCoroutine { iterations: 0 };
+    let coroutine = DummyCoroutine { iterations: 0 };
     let mut task = pin!(async_timer!("dummy", pin!(coroutine)));
     let waker = Waker::noop();
     let mut context = Context::from_waker(&waker);

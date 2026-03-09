@@ -161,7 +161,7 @@ impl SharedDPDKRuntime {
         tcp_seg_offset: Option<bool>,
     ) -> Result<(), Fail> {
         let (rx_rings, tx_rings) = (1, 1);
-        let (rx_ring_size, tx_ring_size) = (2048, 2048);
+        let (rx_ring_size, tx_ring_size) = (4096, 4096);
         let (nb_rxd, nb_txd) = (rx_ring_size, tx_ring_size);
 
         // RX thresholds

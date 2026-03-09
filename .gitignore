@@ -48,3 +48,9 @@ install
 
 # dpdk downloaded folder
 build_tmp
+
+# server TLS crts
+src/ca.crt
+src/server.crt
+src/server.key
+src/server.pkcs8.key

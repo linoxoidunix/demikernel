@@ -115,7 +115,8 @@ impl Receiver {
         }
     }
 
-    // Block until some data is received, up to an optional size.
+    // Block until some data is received.
+    // We ignore the optional size limit to avoid complex splitting logic and underflows.
     pub async fn pop(
         &mut self,
         _size: Option<usize>, // Префикс _ говорит компилятору, что мы намеренно не используем переменную
@@ -331,7 +332,6 @@ impl Receiver {
     fn receive_data(&mut self, seg_start: SeqNumber, buf: DemiBuffer) {
         // This routine should only be called with in-order segment data.
         debug_assert_eq!(seg_start, self.receive_next_seq_no);
-
         // Push the new segment data onto the end of the receive queue.
         self.receive_next_seq_no = self.receive_next_seq_no + SeqNumber::from(buf.len() as u32);
         // This inserts the segment and wakes a waiting pop coroutine.

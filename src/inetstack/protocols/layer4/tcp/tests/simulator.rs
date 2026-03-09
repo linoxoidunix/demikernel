@@ -780,7 +780,7 @@ impl Simulation {
 
     fn prepend_ipv4_header(&self, ip_protocol: IpProtocol, pkt: &mut DemiBuffer) {
         let header = self.build_ipv4_header(ip_protocol);
-        header.serialize_and_attach(pkt);
+        header.serialize_and_attach(pkt, true);
     }
 
     fn run_incoming_packet(&mut self, tcp_packet: &TcpPacket) -> Result<()> {

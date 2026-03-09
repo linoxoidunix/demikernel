@@ -1,0 +1,3 @@
+make LIBOS=catnip LD_LIBRARY_PATH=/home/linoxoidunix/dev/rust/demikernel/install/lib64 PKG_CONFIG_PATH=/home/linoxoidunix/dev/rust/demikernel/install/lib64/pkgconfig FEATURES="--features=metrics"
+sudo RUST_LOG=trace LIBOS=catnip CONFIG_PATH=/home/linoxoidunix/wss_server.yaml LD_LIBRARY_PATH=/home/linoxoidunix/Downloads/dpdk-25.11/install/lib64 ./wss_server 192.168.88.253:8443
+sudo RUST_LOG=trace LIBOS=catnip CONFIG_PATH=/home/linoxoidunix/wss_client.yaml LD_LIBRARY_PATH=/home/linoxoidunix/Downloads/dpdk-25.11/install/lib64 ./wss_client 192.168.88.252:8443
