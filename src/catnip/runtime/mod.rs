@@ -5,7 +5,7 @@
 // Exports
 //======================================================================================================================
 
-mod consts;
+pub mod consts;
 mod mempool;
 
 //======================================================================================================================
@@ -66,6 +66,11 @@ pub struct DPDKRuntime {
     udp_checksum_offload: bool,
     tcp_seg_offset: Option<bool>,
     mtu: u16,
+    number_rx_ring: u16,
+    number_tx_ring: u16,
+    _buffer_rx_ring: u16,
+    _buffer_tx_ring: u16,
+    tx_rr_index: usize, // индекс очереди для round-robin
 }
 
 #[derive(Clone)]
@@ -88,16 +93,33 @@ impl SharedDPDKRuntime {
         } else {
             DEFAULT_MAX_BODY_SIZE
         };
-
-        let mem_pool = Self::initialize_mempool(max_body_size)?;
+        let mem_pool_size = if cfg!(feature = "catnip-libos") {
+            config.mempool_size_elements() as usize
+        } else {
+            DEFAULT_BODY_POOL_SIZE
+        };
+        let mem_pool = Self::initialize_mempool(max_body_size, mem_pool_size)?;
 
         let tcp_offload = config.tcp_checksum_offload().is_ok_and(|x| x);
         let udp_offload = config.udp_checksum_offload().is_ok_and(|x| x);
         let tcp_seg_offset: Option<bool> = config.tcp_seg_offload().ok();
         let mtu = config.mtu()?;
-        //let mss = config.mss()?;
+        let (number_rx_ring, buffer_rx_ring) = config.rx_buffer_config();
+        let (number_tx_ring, buffer_tx_ring) = config.tx_buffer_config();
 
-        Self::dpdk_initialize_port(&mem_pool, port_id, jumbo, mtu, tcp_offload, udp_offload, tcp_seg_offset)?;
+        Self::dpdk_initialize_port(
+            &mem_pool,
+            port_id,
+            jumbo,
+            mtu,
+            tcp_offload,
+            udp_offload,
+            tcp_seg_offset,
+            number_rx_ring,
+            number_tx_ring,
+            buffer_rx_ring,
+            buffer_tx_ring,
+        )?;
 
         Ok(Self(SharedObject::<DPDKRuntime>::new(DPDKRuntime {
             max_body_size,
@@ -107,6 +129,11 @@ impl SharedDPDKRuntime {
             udp_checksum_offload: udp_offload,
             tcp_seg_offset,
             mtu,
+            number_rx_ring,
+            number_tx_ring,
+            _buffer_rx_ring: buffer_rx_ring,
+            _buffer_tx_ring: buffer_tx_ring,
+            tx_rr_index: 0,
         })))
     }
 
@@ -142,11 +169,11 @@ impl SharedDPDKRuntime {
         Ok(port as u16)
     }
 
-    fn initialize_mempool(max_body_size: usize) -> Result<MemoryPool, Fail> {
+    fn initialize_mempool(max_body_size: usize, memory_pool_size: usize) -> Result<MemoryPool, Fail> {
         MemoryPool::new(
             CString::new("body_pool").unwrap(),
             max_body_size,
-            DEFAULT_BODY_POOL_SIZE,
+            memory_pool_size,
             DEFAULT_CACHE_SIZE,
         )
     }
@@ -159,9 +186,13 @@ impl SharedDPDKRuntime {
         tcp_checksum_offload: bool,
         udp_checksum_offload: bool,
         tcp_seg_offset: Option<bool>,
+        number_rx_ring: u16,
+        number_tx_ring: u16,
+        buffer_rx_ring: u16,
+        buffer_tx_ring: u16,
     ) -> Result<(), Fail> {
-        let (rx_rings, tx_rings) = (1, 1);
-        let (rx_ring_size, tx_ring_size) = (4096, 4096);
+        let (rx_rings, tx_rings) = (number_rx_ring, number_tx_ring);
+        let (rx_ring_size, tx_ring_size) = (buffer_rx_ring, buffer_tx_ring);
         let (nb_rxd, nb_txd) = (rx_ring_size, tx_ring_size);
 
         // RX thresholds
@@ -436,7 +467,10 @@ impl PhysicalLayer for SharedDPDKRuntime {
         //         println!("---------------------------------");
         //     }
         // }
-        let sent = unsafe { rte_eth_tx_burst(self.port_id, 0, mbufs.as_mut_ptr(), count as u16) };
+        let queue_id = self.tx_rr_index as u16; // выбираем очередь для этой партии
+        let sent = unsafe { rte_eth_tx_burst(self.port_id, queue_id, mbufs.as_mut_ptr(), count as u16) };
+        // обновляем индекс для следующего вызова
+        self.tx_rr_index = (self.tx_rr_index + 1) % self.number_tx_ring as usize;
         debug_assert_eq!(sent, 1);
         Ok(())
     }
@@ -560,7 +594,13 @@ impl PhysicalLayer for SharedDPDKRuntime {
         //         (m.__bindgen_anon_3.tx_offload >> 7) & 0x1ff
         //     );
         // }
-        let sent = unsafe { rte_eth_tx_burst(self.port_id, 0, mbufs.as_mut_ptr(), 1) };
+        let queue_id = self.tx_rr_index as u16; // выбираем очередь для этой партии
+        let count = 1;
+        // Получаем lcore ID, с которого отправляем
+        let sent = unsafe { rte_eth_tx_burst(self.port_id, queue_id, mbufs.as_mut_ptr(), count as u16) };
+        // обновляем индекс для следующего вызова
+        self.tx_rr_index = (self.tx_rr_index + 1) % self.number_rx_ring as usize;
+        //let sent = unsafe { rte_eth_tx_burst(self.port_id, 0, mbufs.as_mut_ptr(), 1) };
 
         if sent == 1 {
             //TODO make stats
@@ -581,21 +621,38 @@ impl PhysicalLayer for SharedDPDKRuntime {
         let mut buffers = ArrayVec::new();
         let mut raw_mbufs: [*mut rte_mbuf; MAX_BATCH_SIZE_NUM_PACKETS] = unsafe { mem::zeroed() };
 
-        let count = unsafe {
-            rte_eth_rx_burst(
-                self.port_id,
-                0,
-                raw_mbufs.as_mut_ptr(),
-                MAX_BATCH_SIZE_NUM_PACKETS as u16,
-            )
-        };
+        // let count = unsafe {
+        //     rte_eth_rx_burst(
+        //         self.port_id,
+        //         0,
+        //         raw_mbufs.as_mut_ptr(),
+        //         MAX_BATCH_SIZE_NUM_PACKETS as u16,
+        //     )
+        // };
 
-        assert!(count as usize <= MAX_BATCH_SIZE_NUM_PACKETS);
+        // assert!(count as usize <= MAX_BATCH_SIZE_NUM_PACKETS);
 
-        for &mbuf in &raw_mbufs[..count as usize] {
-            // Safety: `packet` is a valid pointer to a properly initialized `rte_mbuf` struct.
-            let buffer = unsafe { DemiBuffer::from_mbuf(mbuf) };
-            buffers.push(buffer);
+        // for &mbuf in &raw_mbufs[..count as usize] {
+        //     // Safety: `packet` is a valid pointer to a properly initialized `rte_mbuf` struct.
+        //     let buffer = unsafe { DemiBuffer::from_mbuf(mbuf) };
+        //     buffers.push(buffer);
+        // }
+
+        for queue_id in 0..self.number_rx_ring {
+            let count = unsafe {
+                rte_eth_rx_burst(
+                    self.port_id,
+                    queue_id as u16,
+                    raw_mbufs.as_mut_ptr(),
+                    MAX_BATCH_SIZE_NUM_PACKETS as u16,
+                )
+            };
+            assert!(count as usize <= MAX_BATCH_SIZE_NUM_PACKETS);
+
+            for &mbuf in &raw_mbufs[..count as usize] {
+                let buffer = unsafe { DemiBuffer::from_mbuf(mbuf) };
+                buffers.push(buffer);
+            }
         }
 
         Ok(buffers)

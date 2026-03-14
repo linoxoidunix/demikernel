@@ -5,6 +5,8 @@
 // Imports
 //======================================================================================================================
 
+#[cfg(feature = "catnip-libos")]
+use crate::catnip::runtime::consts::DEFAULT_BODY_POOL_SIZE;
 #[cfg(all(feature = "catpowder-libos", target_os = "windows"))]
 use crate::inetstack::protocols::Protocol;
 use crate::{pal::KeepAlive, runtime::fail::Fail, MacAddress};
@@ -12,7 +14,6 @@ use crate::{pal::KeepAlive, runtime::fail::Fail, MacAddress};
 use ::std::ffi::CString;
 use ::std::{collections::HashMap, fs::File, io::Read, net::Ipv4Addr, ops::Index, str::FromStr, time::Duration};
 use ::yaml_rust::{Yaml, YamlLoader};
-
 //======================================================================================================================
 // Constants
 //======================================================================================================================
@@ -55,6 +56,12 @@ mod inetstack_config {
 mod dpdk_config {
     pub const SECTION_NAME: &str = "dpdk";
     pub const EAL_INIT_ARGS: &str = "eal_init";
+    pub const RX_BUFFER_COUNT: &str = "rx_buffer_count";
+    pub const TX_BUFFER_COUNT: &str = "tx_buffer_count";
+    pub const RX_RING_SIZE: &str = "rx_ring_size";
+    pub const TX_RING_SIZE: &str = "tx_ring_size";
+    pub const MEMORY_POOL_SIZE: &str = "mempool_size_elements";
+    //pub const RSS: &str = "rss";
 }
 
 // Raw socket option. This only applies to catpowder.
@@ -495,6 +502,57 @@ impl Config {
             }
         }
         Ok(result)
+    }
+
+    #[cfg(feature = "catnip-libos")]
+    /// RX config: Returns (buffer count, ring size) for RX queues.
+    /// Если ключи отсутствуют, возвращает (1, 4096) по умолчанию.
+    pub fn rx_buffer_config(&self) -> (u16, u16) {
+        if let Ok(yaml) = Self::dpdk_config(self) {
+            let rx_buffer_count = yaml[dpdk_config::RX_BUFFER_COUNT]
+                .as_i64()
+                .map(|v| v as u16)
+                .unwrap_or(1);
+            let rx_ring_size = yaml[dpdk_config::RX_RING_SIZE]
+                .as_i64()
+                .map(|v| v as u16)
+                .unwrap_or(4096);
+            (rx_buffer_count, rx_ring_size)
+        } else {
+            (1, 4096)
+        }
+    }
+
+    #[cfg(feature = "catnip-libos")]
+    /// TX config: Returns (buffer count, ring size) for TX queues.
+    /// Если ключи отсутствуют, возвращает (1, 4096) по умолчанию.
+    pub fn tx_buffer_config(&self) -> (u16, u16) {
+        if let Ok(yaml) = Self::dpdk_config(self) {
+            let tx_buffer_count = yaml[dpdk_config::TX_BUFFER_COUNT]
+                .as_i64()
+                .map(|v| v as u16)
+                .unwrap_or(1);
+            let tx_ring_size = yaml[dpdk_config::TX_RING_SIZE]
+                .as_i64()
+                .map(|v| v as u16)
+                .unwrap_or(4096);
+            (tx_buffer_count, tx_ring_size)
+        } else {
+            (1, 4096)
+        }
+    }
+
+    #[cfg(feature = "catnip-libos")]
+    pub fn mempool_size_elements(&self) -> u32 {
+        if let Ok(yaml) = Self::dpdk_config(self) {
+            let mempool_element_size = yaml[dpdk_config::MEMORY_POOL_SIZE]
+                .as_i64()
+                .map(|v| v as u32)
+                .unwrap_or(DEFAULT_BODY_POOL_SIZE as u32);
+            mempool_element_size
+        } else {
+            DEFAULT_BODY_POOL_SIZE as u32
+        }
     }
 
     pub fn mtu(&self) -> Result<u16, Fail> {
