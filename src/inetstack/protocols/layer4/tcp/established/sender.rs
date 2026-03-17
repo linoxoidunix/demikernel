@@ -238,6 +238,11 @@ impl Sender {
         // If the user is done sending (i.e. has called close on this connection), then they shouldn't be sending.
         debug_assert!(cb.sender.fin_seq_no.is_none());
 
+        if cb.state == State::Closed {
+            debug!("push() called but connection is Closed, ignoring send");
+            return Err(Fail::new(libc::ECONNRESET, "connection is closed"));
+        }
+
         // TODO: We need to fix this the correct way: limit our send buffer size to the amount we're willing to buffer.
         if cb.sender.unsent_queue.len() > UNSENT_QUEUE_CUTOFF - 1 {
             return Err(Fail::new(libc::EBUSY, "too many packets to send"));
@@ -402,6 +407,12 @@ impl Sender {
         segment: &mut DemiBuffer,
     ) -> usize {
         debug_assert!(!segment.is_empty());
+
+        // 🚫 Если соединение закрыто, ничего не отправляем
+        if cb.state == State::Closed {
+            debug!("send_segment called but connection is Closed, skipping send");
+            return 0;
+        }
 
         let max_frame_size_bytes = Self::get_open_window_size_bytes(cb);
         if max_frame_size_bytes == 0 {

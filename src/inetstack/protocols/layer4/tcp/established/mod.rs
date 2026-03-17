@@ -187,6 +187,10 @@ impl SharedEstablishedSocket {
             buf.len(),
             tcp_hdr,
         );
+        if self.control_block.state == State::Closed {
+            debug!("push() called but connection is Closed, ignoring receive buffer");
+            return;
+        }
 
         let now = self.runtime.now();
         let mut layer3_endpoint = self.layer3_endpoint.clone();
