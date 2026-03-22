@@ -112,11 +112,16 @@ impl Default for EphemeralPorts {
         for port_number in (FIRST_PRIVATE_PORT_NUMBER..=LAST_PRIVATE_PORT_NUMBER).rev() {
             port_numbers.push(port_number);
         }
-        #[cfg(not(debug_assertions))]
-        {
-            let mut rng: SmallRng = SmallRng::seed_from_u64(EPHEMERAL_PORT_SEED);
-            port_numbers.shuffle(&mut rng);
-        }
+        use rand::prelude::SliceRandom;
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+        let mut rng: SmallRng = SmallRng::from_entropy();
+        port_numbers.shuffle(&mut rng);
+        // #[cfg(not(debug_assertions))]
+        // {
+        //     let mut rng: SmallRng = SmallRng::seed_from_u64(EPHEMERAL_PORT_SEED);
+        //     port_numbers.shuffle(&mut rng);
+        // }
         Self {
             port_numbers: VecDeque::from(port_numbers),
             range_min: FIRST_PRIVATE_PORT_NUMBER,

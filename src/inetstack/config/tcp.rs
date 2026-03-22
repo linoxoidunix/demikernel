@@ -92,7 +92,7 @@ impl Default for TcpConfig {
     fn default() -> Self {
         TcpConfig {
             advertised_mss: DEFAULT_MSS,
-            handshake_retries: 5,
+            handshake_retries: 1,
             handshake_timeout: TCP_HANDSHAKE_TIMEOUT,
             receive_window_size: 0xffff,
             ack_delay_timeout: TCP_ACK_DELAY_TIMEOUT,

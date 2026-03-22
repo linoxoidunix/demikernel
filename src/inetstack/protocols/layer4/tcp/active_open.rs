@@ -219,10 +219,17 @@ impl SharedActiveOpenSocket {
         // Start connection handshake.
         let handshake_retries: usize = self.tcp_config.get_handshake_retries();
         let handshake_timeout = self.tcp_config.get_handshake_timeout();
-
+        debug!(
+            "start handshake retries:{} handshake_timeout:{:?}",
+            handshake_retries, handshake_timeout
+        );
         // Try to connect.
-        for _ in 0..handshake_retries {
+        for i in 0..handshake_retries {
+            // Генерация нового ISN
+            //self.local_isn = SeqNumber::from(rand::random::<u32>());
+
             // Set up SYN packet.
+            debug!("current handshake retries:{}/{}", i, handshake_retries);
             let mut tcp_hdr = TcpHeader::new(self.local.port(), self.remote.port());
             let l4_header_len = tcp_hdr.compute_size();
             tcp_hdr.syn = true;
@@ -281,6 +288,7 @@ impl SharedActiveOpenSocket {
                 }
             }
         }
+        debug!("end handshake retries");
 
         let cause: &'static str = "connection handshake timed out";
         error!("connect(): {}", cause);
