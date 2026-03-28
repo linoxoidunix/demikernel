@@ -11,6 +11,7 @@ readme = "README.md"
 homepage = "https://aka.ms/demikernel"
 repository = "https://github.com/demikernel/demikernel"
 license-file = "LICENSE.txt"
+links = "demikernel" # Это позволит приложению видеть DEP_DEMIKERNEL_...
 
 [dependencies]
 # Third-party crates.
