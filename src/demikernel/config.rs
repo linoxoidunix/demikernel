@@ -517,7 +517,7 @@ impl Config {
                 .as_i64()
                 .map(|v| v as u16)
                 .unwrap_or(4096);
-            (rx_buffer_count, rx_ring_size)
+            (rx_ring_size, rx_buffer_count)
         } else {
             (1, 4096)
         }
@@ -536,7 +536,7 @@ impl Config {
                 .as_i64()
                 .map(|v| v as u16)
                 .unwrap_or(4096);
-            (tx_buffer_count, tx_ring_size)
+            (tx_ring_size, tx_buffer_count)
         } else {
             (1, 4096)
         }
